@@ -1,43 +1,41 @@
 import json
 import os
-import pandas as pd
 import redis
 from nicegui import ui
 
-# -------------------------
-# --- CONFIGURATION ---
-# -------------------------
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 REDIS_HOST = 'localhost'
 REDIS_PORT = 6379
-REDIS_DB = 0
-REDIS_KEY = 'breakout_logs'
-REDIS_STATUS_KEY = 'solusdc_status'
+REDIS_DB   = 0
+
+REDIS_BREAKOUT_KEY = 'breakout_logs'
+REDIS_STATUS_KEY   = 'solusdc_status'
+REDIS_ACTIVITY_KEY = 'solusdc_activity_snapshots'
+REDIS_ROLLING_KEY  = 'solusdc_rolling_metrics_logs'
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 CSS_PATH = os.path.join(os.path.dirname(__file__), 'dashboard.css')
 
-# -------------------------
-# --- DATA LOADING ---
-# -------------------------
+# ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_data():
-    breakout_logs = json.loads(redis_client.get(REDIS_KEY) or '[]')
-    return pd.DataFrame(breakout_logs)
+def load_json(key: str, limit: int = 60) -> list[dict]:
+    """Read a JSON list from Redis, returning at most `limit` entries."""
+    return json.loads(redis_client.get(key) or '[]')[:limit]
 
-# -------------------------
-# --- PAGE ---
-# -------------------------
+def make_columns(rows: list[dict]) -> list[dict]:
+    """Build NiceGUI table column definitions from the keys of the first row."""
+    if not rows:
+        return []
+    return [{'name': k, 'label': k.upper(), 'field': k, 'align': 'left'} for k in rows[0].keys()]
+
+# ── Page ──────────────────────────────────────────────────────────────────────
 
 @ui.page('/')
 def main():
     with open(CSS_PATH) as f:
         ui.add_head_html(f'<style>{f.read()}</style>')
-
-    df = load_data()
-    columns = [{'name': col, 'label': col.upper(), 'field': col, 'align': 'left'} for col in df.columns] if not df.empty else []
-    rows = df.to_dict(orient='records')
 
     # ── Header ────────────────────────────────────────────────────────────────
     with ui.element('div').classes('header w-full'):
@@ -51,7 +49,7 @@ def main():
     # ── Main content ──────────────────────────────────────────────────────────
     with ui.column().classes('w-full q-pa-lg gap-6'):
 
-        # ── Status cards ──────────────────────────────────────────────────────
+        # ── Trade status cards ────────────────────────────────────────────────
         with ui.row().classes('w-full gap-3 flex-wrap'):
             with ui.element('div').classes('stat-card'):
                 ui.label('Price').classes('stat-label')
@@ -77,23 +75,41 @@ def main():
                 ui.label('Target Price').classes('stat-label')
                 target_val = ui.label('—').classes('stat-value neutral')
 
-        # ── Breakout log table ────────────────────────────────────────────────
-        with ui.column().classes('w-full gap-2'):
-            ui.label('Breakout Log').classes('section-title')
-            with ui.tabs().props('align=left dense').classes('w-full') as tabs:
-                one = ui.tab('SOLUSDC').props('no-caps')
-                ui.tab('Other').props('no-caps')
 
-            with ui.tab_panels(tabs, value=one).classes('w-full'):
-                with ui.tab_panel(one):
-                    ticker_table = ui.table(
-                        columns=columns,
-                        rows=rows,
-                        row_key=df.columns[0] if not df.empty else 'timestamp'
-                    ).classes('breakout-table w-full')
+
+        # ── Tabbed tables ─────────────────────────────────────────────────────
+        with ui.column().classes('w-full gap-2'):
+            ui.label('Signal & Breakout Data').classes('section-title')
+
+            with ui.tabs().props('align=left dense').classes('w-full') as tabs:
+                tab_activity = ui.tab('Activity Snapshots').props('no-caps')
+                tab_breakout = ui.tab('Breakout Log').props('no-caps')
+                tab_rolling  = ui.tab('Rolling Metrics').props('no-caps')
+
+            with ui.tab_panels(tabs, value=tab_activity).classes('w-full'):
+
+                with ui.tab_panel(tab_activity):
+                    activity_empty = ui.label('Waiting for activity snapshot data…').classes('empty-state')
+                    activity_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
+                    activity_table.add_slot('body', '''
+                        <q-tr :props="props" :class="props.row.is_qualified_activity ? 'qualified-row' : ''">
+                            <q-td v-for="col in props.cols" :key="col.name" :props="props">
+                                {{ col.value }}
+                            </q-td>
+                        </q-tr>
+                    ''')
+
+                with ui.tab_panel(tab_breakout):
+                    breakout_empty = ui.label('Waiting for breakout data…').classes('empty-state')
+                    breakout_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
+
+                with ui.tab_panel(tab_rolling):
+                    rolling_empty = ui.label('Waiting for rolling metrics…').classes('empty-state')
+                    rolling_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
 
     # ── Periodic update ───────────────────────────────────────────────────────
     def update_ui():
+        # ── Trade status (from execute layer) ─────────────────────────────────
         data = redis_client.hgetall(REDIS_STATUS_KEY)
 
         if data:
@@ -114,15 +130,35 @@ def main():
             zone_val.classes(replace='stat-value profit' if zone == 'Profit' else ('stat-value loss' if zone == 'Loss' else 'stat-value neutral'))
             zone_val.text = zone
 
-        new_df = load_data()
-        if not new_df.empty:
-            ticker_table.rows = new_df.to_dict(orient='records')
-            ticker_table.update()
+        # ── Activity snapshot table ───────────────────────────────────────────
+        activity_rows = load_json(REDIS_ACTIVITY_KEY)
+        activity_empty.set_visibility(not activity_rows)
+        activity_table.set_visibility(bool(activity_rows))
+        if activity_rows:
+            activity_table.columns = make_columns(activity_rows)
+            activity_table.rows    = activity_rows
+            activity_table.update()
+
+        # ── Breakout log table ────────────────────────────────────────────────
+        breakout_rows = load_json(REDIS_BREAKOUT_KEY)
+        breakout_empty.set_visibility(not breakout_rows)
+        breakout_table.set_visibility(bool(breakout_rows))
+        if breakout_rows:
+            breakout_table.columns = make_columns(breakout_rows)
+            breakout_table.rows    = breakout_rows
+            breakout_table.update()
+
+        # ── Rolling metrics table ─────────────────────────────────────────────
+        rolling_rows = load_json(REDIS_ROLLING_KEY)
+        rolling_empty.set_visibility(not rolling_rows)
+        rolling_table.set_visibility(bool(rolling_rows))
+        if rolling_rows:
+            rolling_table.columns = make_columns(rolling_rows)
+            rolling_table.rows    = rolling_rows
+            rolling_table.update()
 
     ui.timer(1.0, update_ui)
 
-# -------------------------
-# --- RUN APP ---
-# -------------------------
+# ── Run ───────────────────────────────────────────────────────────────────────
 
 ui.run(title='Ritrade', dark=True, favicon='📈')

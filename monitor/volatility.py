@@ -2,12 +2,17 @@ import requests
 import pandas as pd
 import time
 import math
+import redis
+import json
 
 # Configuration
 TOP_N = 5
 CANDLE_INTERVAL = '1m'
 LOOKBACK_CANDLES = 15
 BASE_URL = "https://api.binance.com"
+
+# Redis connection
+redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 # Predefined top market cap USDT tickers
 TOP_TICKERS = [
@@ -32,6 +37,17 @@ def fetch_kline_data(symbol, interval, limit):
 
 
 def analyze_predefined_tickers():
+    """
+    Analyzes pre-defined tickers and ranks them based on a custom volatility score.
+    
+    Scoring Logic:
+    score = (abs(price_change) * 2.5) + log10(total_quote_volume + 1) - (avg_spread * 1.5) - volume_penalty
+    
+    - Rewards high absolute price movement (strong momentum).
+    - Rewards high trading volume logarithmically (good liquidity).
+    - Penalizes assets with less than $500k volume in the lookback window.
+    - Penalizes wide average spreads to avoid choppy, erratic wicks.
+    """
     results = []
 
     for i, symbol in enumerate(TOP_TICKERS):
@@ -74,6 +90,12 @@ def analyze_predefined_tickers():
     print(df_result.head(TOP_N))
 
     top_symbols = df_result.head(TOP_N)['symbol'].tolist()
+    
+    # Save to Redis
+    redis_client.set("top_volatile_tickers", json.dumps(top_symbols))
+    print(f"🔥 Saved top {TOP_N} volatile tickers to Redis ('top_volatile_tickers')")
+
+    # Save to text file as a backup
     with open("volatile_tickers.txt", "w") as f:
         for symbol in top_symbols:
             f.write(symbol + "\n")

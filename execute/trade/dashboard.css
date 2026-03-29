@@ -58,10 +58,17 @@ body { background-color: #0d1117; }
     margin-bottom: 12px;
 }
 
-/* ── Breakout table ──────────────────────────────────────────────────────── */
-.breakout-table { width: 100%; border-radius: 10px; overflow: hidden; }
-.breakout-table .q-table__container { background: #161b22 !important; }
-.breakout-table thead tr th {
+/* ── Signal card colors ─────────────────────────────────────────────────── */
+.stat-value.signal-hot  { color: #3fb950; }   /* dynamic_factor > 0.6  */
+.stat-value.signal-warm { color: #d29922; }   /* dynamic_factor 0.3–0.6 */
+.stat-value.signal-cold { color: #8b949e; }   /* dynamic_factor < 0.3  */
+.stat-value.authentic-yes { color: #3fb950; }
+.stat-value.authentic-no  { color: #8b949e; }
+
+/* ── Data tables (shared style for all tables) ──────────────────────────── */
+.data-table { width: 100%; border-radius: 10px; overflow: hidden; }
+.data-table .q-table__container { background: #161b22 !important; }
+.data-table thead tr th {
     background: #21262d !important;
     color: #8b949e !important;
     font-size: 11px !important;
@@ -69,13 +76,21 @@ body { background-color: #0d1117; }
     letter-spacing: 0.6px;
     border-bottom: 1px solid #30363d !important;
 }
-.breakout-table tbody tr td {
+.data-table tbody tr td {
     color: #c9d1d9 !important;
     font-size: 13px !important;
     border-bottom: 1px solid #21262d !important;
     font-family: 'Roboto Mono', monospace;
 }
-.breakout-table tbody tr:hover td { background: #1c2128 !important; }
+.data-table tbody tr:hover td { background: #1c2128 !important; }
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty-state {
+    color: #484f58;
+    font-size: 13px;
+    padding: 32px 0;
+    text-align: center;
+}
 
 /* ── Tabs ────────────────────────────────────────────────────────────────── */
 .q-tab { color: #8b949e !important; font-size: 13px !important; }
@@ -91,3 +106,12 @@ body { background-color: #0d1117; }
 
 /* ── Notifications ───────────────────────────────────────────────────────── */
 .q-notification { background: #161b22 !important; color: #e6edf3 !important; border: 1px solid #30363d; }
+
+/* ── Qualified Activity Table Row ───────────────────────────────────────── */
+.qualified-row td {
+    background: rgba(63, 185, 80, 0.15) !important;
+    color: #e6edf3 !important;
+}
+.qualified-row td:first-child {
+    border-left: 3px solid #3fb950 !important;
+}

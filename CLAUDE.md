@@ -29,7 +29,7 @@ Redis must be running locally on port 6379 before starting any process.
 ```bash
 cd monitor
 
-python candle_roll.py          # core signal engine — writes to Redis
+python activity_monitor.py          # core signal engine — writes to Redis
 python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
 python volume_spike.py         # optional: volume spike audio alerts for BTC/ETH/SOL/BNB
@@ -50,7 +50,7 @@ python -m execute.trade.dashboard    # NiceGUI dashboard — live trade status a
 ### Codebase Separation
 
 ```
-monitor/candle_roll.py  →  Redis  →  execute/breakout/main.py
+monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
                                   →  monitor/app.py (Streamlit, read-only)
                                   →  execute/trade/dashboard.py (NiceGUI, interactive)
 ```
@@ -65,7 +65,7 @@ Lives at the repo root; used by both monitor and execute layers.
 
 ### Monitor Codebase (`monitor/`)
 
-#### Core Engine (`candle_roll.py`)
+#### Core Engine (`activity_monitor.py`)
 
 - Connects to Binance WebSocket (`@trade` stream)
 - Maintains a rolling 10-second window of trades, trimming old entries on every tick
@@ -74,19 +74,19 @@ Lives at the repo root; used by both monitor and execute layers.
 - Computes `dynamic_factor` (0–1): average of three normalized values (volume, std_dev, trade_count) using 20th–80th percentile banding
 - Writes three Redis keys: `trap_logs`, `minute_logs`, `rolling_metrics_logs`
 
-`candle_roll.py` is the **active engine**. `candle.py` is the older bucket-based version — both are kept, but `candle_roll.py` is the current implementation. Do not confuse them.
+`activity_monitor.py` is the **active engine**. `candle.py` is the older bucket-based version — both are kept, but `activity_monitor.py` is the current implementation. Do not confuse them.
 
 #### Calibrated Thresholds
 
-The thresholds in `candle_roll.py` (and `candle.py`) are specific to **BTCUSDC** and were derived from baseline data collection. The archived `tickerstat.py` was used to generate the `.csv` baseline files. Changing the ticker requires recalibrating these values.
+The thresholds in `activity_monitor.py` (and `candle.py`) are specific to **BTCUSDC** and were derived from baseline data collection. The archived `tickerstat.py` was used to generate the `.csv` baseline files. Changing the ticker requires recalibrating these values.
 
 #### Redis Keys (written by monitor)
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `trap_logs` | `candle_roll.py` | `app.py` tab 2, `execute/trade/dashboard.py` | 20s trap snapshots |
-| `minute_logs` | `candle_roll.py` | `app.py` tab 3 | per-minute summaries |
-| `rolling_metrics_logs` | `candle_roll.py` | `app.py` tab 1 | rolling 10s metrics |
+| `trap_logs` | `activity_monitor.py` | `app.py` tab 2, `execute/trade/dashboard.py` (signal cards + Trap Signals tab) | 20s trap snapshots |
+| `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
+| `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1, `execute/trade/dashboard.py` (Rolling Metrics tab) | rolling 10s metrics |
 
 #### Monitor Dashboard (`app.py`)
 
@@ -102,7 +102,7 @@ Additional Streamlit pages (`pages/`) are kept for reference but are no longer p
 - `signal_score.py` — standalone scoring utility (not yet integrated into live engine); computes a 0–100 signal score from buy/sell volume ratio, momentum, and spread
 - `volume_spike.py` — independent WebSocket monitor; uses `core_utils/logger/log.py` for timestamped logging and `afplay` for macOS audio alerts
 - `volatility.py` — pre-trade ticker selection; scores top 20 USDT pairs and saves results to `volatile_tickers.txt`
-- `prices.py` — early prototype for average price at 20s mark; superseded by `candle_roll.py`
+- `prices.py` — early prototype for average price at 20s mark; superseded by `activity_monitor.py`
 
 #### Research (`monitor/research/`)
 
@@ -162,20 +162,27 @@ execute/
 
 #### NiceGUI Dashboard (`execute/trade/dashboard.py`)
 
-Interactive execution UI with live trade status cards, breakout log table, and Buy/Sell buttons. Runs standalone (`python -m execute.trade.dashboard`).
+Unified execution UI combining trade status with monitor signal context. Runs standalone (`python -m execute.trade.dashboard`).
+
+- **Trade status cards** — Price, P&L, Zone, Entry, Stop, Target (from `{ticker}_status`)
+- **Signal cards** — Dynamic Factor, Authentic Volume, Trades, Slope (from latest `trap_logs` entry)
+- **Trap Signals tab** — full trap snapshot history (reads `trap_logs` from monitor layer)
+- **Breakout Log tab** — per-candle breakout flags (reads `breakout_logs` from execute layer)
+- **Rolling Metrics tab** — high-frequency 10s window data (reads `rolling_metrics_logs` from monitor layer)
+- Buy/Sell buttons
 
 #### SMC Research (`execute/smc/`)
 
 - `smc.py` — standalone SMC/RIMC detection research prototype (not integrated into main.py)
 - `smcplot.py` — incomplete Matplotlib plot extraction from smc.py (work in progress)
 
-#### Missing Link
+#### Next Integration Point
 
-`execute/breakout/strategy.py` implements a price range breakout. The calibrated **volatility trap** logic from `monitor/candle_roll.py` has not yet been ported into it. This is the next integration point.
+The execution dashboard now displays monitor signal data (trap snapshots, rolling metrics) for visual context. However, `execute/breakout/strategy.py` still implements a simple price range breakout — the calibrated **volatility trap** logic from `monitor/activity_monitor.py` has not yet been wired into the breakout decision. Porting `dynamic_factor` and authenticity checks into `strategy.py` is the next step.
 
 ## Other Directories
 
-- **`archive/`** — `candle_old.py`: older bucket-based candle engine (superseded by `candle_roll.py`)
+- **`archive/`** — `candle_old.py`: older bucket-based candle engine (superseded by `activity_monitor.py`)
 - **`simulations/`** — `bracketing_income.py`: standalone income/bracketing simulation scripts
 
 ## Key Conventions

@@ -6,8 +6,8 @@ RUN_DIR   := .run
 
 # ── Start all required components in the background ────────────────────────────
 start: redis-check | $(RUN_DIR)
-	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/candle_roll.py > $(RUN_DIR)/candle_roll.log 2>&1 & echo $$! > $(RUN_DIR)/candle_roll.pid
-	@echo "▶  monitor/candle_roll.py      (pid $$(cat $(RUN_DIR)/candle_roll.pid))"
+	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/activity_monitor.py > $(RUN_DIR)/activity_monitor.log 2>&1 & echo $$! > $(RUN_DIR)/activity_monitor.pid
+	@echo "▶  monitor/activity_monitor.py      (pid $$(cat $(RUN_DIR)/activity_monitor.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/app.py > $(RUN_DIR)/monitor.log 2>&1 & echo $$! > $(RUN_DIR)/monitor.pid
 	@echo "▶  monitor/app.py              (pid $$(cat $(RUN_DIR)/monitor.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m execute.breakout.main > $(RUN_DIR)/main.log 2>&1 & echo $$! > $(RUN_DIR)/main.pid
@@ -30,7 +30,7 @@ stop:
 
 # ── Individual foreground targets (dev / debug) ───────────────────────────────
 candle-roll: redis-check
-	$(PYTHON) monitor/candle_roll.py
+	$(PYTHON) monitor/activity_monitor.py
 
 main: redis-check
 	$(PYTHON) -m execute.breakout.main

@@ -6,7 +6,7 @@ st.title("`vbout/` — Architecture Overview")
 st.markdown("---")
 
 st.markdown("""
-Your instinct is right. This is an evolution toward a **complete, integrated trading system** — moving from passive observation (`candle_roll.py`) toward active execution. The directory name likely stands for **"volatility breakout"**.
+Your instinct is right. This is an evolution toward a **complete, integrated trading system** — moving from passive observation (`activity_monitor.py`) toward active execution. The directory name likely stands for **"volatility breakout"**.
 """)
 
 st.markdown("---")
@@ -44,7 +44,7 @@ st.markdown("""
 - If the latest candle closes **above** prior highs → `breakoutUp` (long signal)
 - If it closes **below** prior lows → `breakoutDown` (short signal)
 - Logs each candle's result to `breakout_logs`
-- Note: this is **not** the volatility trap strategy from `candle_roll.py` — it's a different, simpler strategy based on price range breakout on 1m candles
+- Note: this is **not** the volatility trap strategy from `activity_monitor.py` — it's a different, simpler strategy based on price range breakout on 1m candles
 """)
 
 st.subheader("`PnL.py` — Pure math module for trade management:")
@@ -81,9 +81,9 @@ st.markdown("---")
 st.header("What's Missing to Integrate the Volatility Trap")
 
 st.markdown("""
-Your read is correct — the gap between `vbout/` and `candle_roll.py` is that `strategy.py` currently implements a **price range breakout**, not the **volatility trap**. To bring them together you'd need to:
+Your read is correct — the gap between `vbout/` and `activity_monitor.py` is that `strategy.py` currently implements a **price range breakout**, not the **volatility trap**. To bring them together you'd need to:
 
-1. Replace or augment `strategy.py` with the trap logic from `candle_roll.py` — specifically the rolling 10s window, `dynamic_factor`, and the authenticity check (volume + trade count + std_dev thresholds)
-2. The `Kline` class uses `@kline_1m` (closed candle events) — the trap fires at **20s into each minute** from raw `@trade` stream data, so `Kline` would need to be replaced or supplemented with a trade-stream equivalent (like `candle_roll.py`'s WebSocket loop)
+1. Replace or augment `strategy.py` with the trap logic from `activity_monitor.py` — specifically the rolling 10s window, `dynamic_factor`, and the authenticity check (volume + trade count + std_dev thresholds)
+2. The `Kline` class uses `@kline_1m` (closed candle events) — the trap fires at **20s into each minute** from raw `@trade` stream data, so `Kline` would need to be replaced or supplemented with a trade-stream equivalent (like `activity_monitor.py`'s WebSocket loop)
 3. `Trade` already has the skeleton for acting on signals — `execute_limit_order` / `execute_market_order` just need implementing once a trap signal fires
 """)

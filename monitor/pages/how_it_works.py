@@ -45,7 +45,7 @@ the data decides which pair to trade, not a hardcoded value.
 
 st.divider()
 
-st.header("Step 3: The Core Engine — `candle.py` vs `candle_roll.py`")
+st.header("Step 3: The Core Engine — `candle.py` vs `activity_monitor.py`")
 st.markdown("""
 The strategy was written in two versions, both sharing the same core idea but differing in how they
 measure the 20-second window.
@@ -64,7 +64,7 @@ This gives you a view of "what happened this full minute so far" AND "what happe
 """)
 
 with col2:
-    st.subheader("candle_roll.py — Rolling Window")
+    st.subheader("activity_monitor.py — Rolling Window")
     st.markdown("""
 Instead of fixed buckets, this keeps a **rolling list of trades from the last 10 seconds**, trimming
 old ones on every new trade. The window is always "the last 10 seconds from right now" — not "this
@@ -181,7 +181,7 @@ st.code("""
 volatility.py         → pick the best ticker to trade
 tickerstat.py         → calibrate thresholds for that ticker
         ↓
-candle_roll.py        → live WebSocket engine: collect trades,
+activity_monitor.py        → live WebSocket engine: collect trades,
                         run authenticity check, fire traps at 20s
         ↓
 Redis                 → shared memory between bot and UI

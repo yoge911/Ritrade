@@ -53,7 +53,7 @@ A 0–1 score computed as the average of three normalized values (volume, std_de
 ### Data Flow
 
 ```
-monitor/candle_roll.py  →  Redis  →  execute/breakout/main.py
+monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
                                   →  monitor/app.py        (Streamlit, read-only)
                                   →  execute/trade/dashboard.py  (NiceGUI, interactive)
 ```
@@ -62,9 +62,9 @@ monitor/candle_roll.py  →  Redis  →  execute/breakout/main.py
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `trap_logs` | `candle_roll.py` | `app.py` tab 2, `execute/trade/dashboard.py` | 20s trap snapshots |
-| `minute_logs` | `candle_roll.py` | `app.py` tab 3 | per-minute summaries |
-| `rolling_metrics_logs` | `candle_roll.py` | `app.py` tab 1 | rolling 10s metrics |
+| `trap_logs` | `activity_monitor.py` | `app.py` tab 2, `execute/trade/dashboard.py` | 20s trap snapshots |
+| `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
+| `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1 | rolling 10s metrics |
 | `breakout_logs` | `breakout/strategy.py` | `trade/dashboard.py` | per-candle breakout signal log |
 | `{ticker}_status` | `services/trade.py` | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
 | `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub |
@@ -126,14 +126,14 @@ Ritrade/
 │   └── tones/                      # Audio files for macOS afplay alerts
 │
 ├── monitor/                        # Passive observation layer
-│   ├── candle_roll.py              # Core signal engine — rolling 10s window, trap at 20s
+│   ├── activity_monitor.py              # Core signal engine — rolling 10s window, trap at 20s
 │   ├── candle.py                   # Older bucket-based engine (kept for reference)
 │   ├── app.py                      # NiceGUI monitor dashboard (3 tabs, port 8081)
 │   ├── dashboard.css               # Monitor dashboard styles
 │   ├── signal_score.py             # Standalone 0–100 signal scorer (not yet integrated)
 │   ├── volume_spike.py             # Independent volume spike audio alerts
 │   ├── volatility.py               # Pre-trade ticker selection (top 20 USDT pairs)
-│   ├── prices.py                   # Early price prototype (superseded by candle_roll.py)
+│   ├── prices.py                   # Early price prototype (superseded by activity_monitor.py)
 │   ├── pages/
 │   │   ├── how_it_works.py         # Streamlit page: monitor codebase walkthrough
 │   │   └── vbout_walkthrough.py    # Streamlit page: execute codebase walkthrough
@@ -211,7 +211,7 @@ Starts the three core processes in the background. Logs are written to `.run/*.l
 
 ```
 ✅  Redis OK
-▶  monitor/candle_roll.py      (pid 12345)
+▶  monitor/activity_monitor.py      (pid 12345)
 ▶  monitor/app.py              (pid 12346)
 ▶  execute.breakout.main        (pid 12347)
 ▶  execute.trade.dashboard      (pid 12348)
@@ -230,13 +230,13 @@ make stop
 After `make start`, confirm all three processes are alive:
 
 ```bash
-ps aux | grep -E "candle_roll|monitor/app|execute.breakout|execute.trade" | grep -v grep
+ps aux | grep -E "activity_monitor|monitor/app|execute.breakout|execute.trade" | grep -v grep
 ```
 
 Expected output — one line per process:
 
 ```
-user  12345  ...  python monitor/candle_roll.py
+user  12345  ...  python monitor/activity_monitor.py
 user  12346  ...  python monitor/app.py
 user  12347  ...  python -m execute.breakout.main
 user  12348  ...  python -m execute.trade.dashboard
@@ -256,7 +256,7 @@ cat .run/dashboard.log
 Each process writes to its own log file in `.run/`. Tail them individually:
 
 ```bash
-tail -f .run/candle_roll.log   # monitor signal engine
+tail -f .run/activity_monitor.log   # monitor signal engine
 tail -f .run/monitor.log       # monitor NiceGUI dashboard
 tail -f .run/main.log          # execute engine
 tail -f .run/dashboard.log     # execute NiceGUI dashboard
@@ -292,7 +292,7 @@ All targets that require Redis call `redis-check` first and fail fast if it is n
 ```bash
 cd monitor
 
-python candle_roll.py          # core signal engine — writes to Redis
+python activity_monitor.py          # core signal engine — writes to Redis
 python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
 python volume_spike.py         # optional: volume spike audio alerts
@@ -339,7 +339,7 @@ Top 5 tickers are saved to `monitor/research/volatile_tickers.txt`.
 
 ## Calibrated Thresholds
 
-The authenticity thresholds in `candle_roll.py` are specific to **BTCUSDC** and were derived from baseline data in `monitor/research/`. The archived `tickerstat.py` generated those `.csv` files. Changing the ticker requires recalibrating all threshold values.
+The authenticity thresholds in `activity_monitor.py` are specific to **BTCUSDC** and were derived from baseline data in `monitor/research/`. The archived `tickerstat.py` generated those `.csv` files. Changing the ticker requires recalibrating all threshold values.
 
 ---
 
@@ -367,7 +367,7 @@ Interactive execution UI. Runs standalone on port 8080:
 
 ## Next Integration Point
 
-`execute/breakout/strategy.py` currently implements a simple price range breakout. The calibrated volatility trap logic from `monitor/candle_roll.py` (including `dynamic_factor` and authenticity checks) has not yet been ported into the execute layer. This is the next planned integration.
+`execute/breakout/strategy.py` currently implements a simple price range breakout. The calibrated volatility trap logic from `monitor/activity_monitor.py` (including `dynamic_factor` and authenticity checks) has not yet been ported into the execute layer. This is the next planned integration.
 
 ---
 

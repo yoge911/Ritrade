@@ -21,7 +21,7 @@ The system uses a decoupled architecture where the python engine processes real-
 
 ```mermaid
 graph TD
-    A[Binance WebSocket API] -->|Live Trade Stream| B[candle.py / candle_roll.py]
+    A[Binance WebSocket API] -->|Live Trade Stream| B[candle.py / activity_monitor.py]
     B -->|Calculate Metrics| C{Authentic Trigger?}
     
     C -->|Yes: Generate Trap| D[Redis Storage]
@@ -41,7 +41,7 @@ graph TD
 ### The Trading Engines
 There are two main engine files handling data streams:
 - [candle.py](file:///Users/yogesh/Documents/Ritrade/candle.py): The primary engine. It listens to the Binance WebSocket trade stream for a specific ticker (e.g., BTCUSDC). It splits time into 10-second "buckets" and full 1-minute "master" windows. Exactly at the 20-second mark of each minute, it evaluates the data and triggers a trap log if the conditions are met.
-- [candle_roll.py](file:///Users/yogesh/Documents/Ritrade/candle_roll.py): A variation of the engine that uses a continuous **rolling 10-second window** rather than fixed buckets. It continuously generates metrics and triggers traps based on dynamic factors.
+- [activity_monitor.py](file:///Users/yogesh/Documents/Ritrade/activity_monitor.py): A variation of the engine that uses a continuous **rolling 10-second window** rather than fixed buckets. It continuously generates metrics and triggers traps based on dynamic factors.
 
 ### Real-Time Dashboard
 - [app.py](file:///Users/yogesh/Documents/Ritrade/app.py): A modern Streamlit dashboard that automatically refreshes every 1 second. It reads `trap_logs`, `minute_logs`, and `rolling_metrics_logs` from Redis and displays them in clear data tables organized by tabs.
@@ -54,7 +54,7 @@ There are two main engine files handling data streams:
 
 1. You run `python volatility.py` to identify the most volatile pairs right now.
 2. The Redis server runs locally (port 6379).
-3. The engine (`python candle.py` or `python candle_roll.py`) is started. It connects to Binance, initializes Redis, and begins processing thousands of micro-trades.
+3. The engine (`python candle.py` or `python activity_monitor.py`) is started. It connects to Binance, initializes Redis, and begins processing thousands of micro-trades.
 4. You run `streamlit run app.py` to watch the data live in your browser.
 5. The `candle.py` engine publishes the metrics (Average Price, Weighted Average Price (WAP), Standard Deviation, Slope, Volumes) directly into Redis keys as JSON.
 6. The Streamlit app pulls these JSONs and parses them into Pandas DataFrames for visualization.
