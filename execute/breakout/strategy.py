@@ -1,48 +1,34 @@
+from core_utils.format import format_timestamp
+from execute.models.candle import Candle
+from execute.models.breakout_log import BreakoutLog
 
-from datetime import datetime
 
-
-def format_timestamp(ms):
-    return datetime.fromtimestamp(ms / 1000).strftime('%H:%M:%S')
-
-def volatility_breakout(buffer, breakout_logs):
+def volatility_breakout(buffer: list[dict], breakout_logs: list) -> None:
     """
-    Process breakout logic and log minute data.
+    Process breakout logic on the candle buffer and append to breakout_logs.
 
     Args:
-        buffer (list): List of candlestick data.
-        breakout_logs (list): List to store breakout log data.
-
-    Returns:
-        None
+        buffer: List of raw candle dicts from Kline.
+        breakout_logs: List to prepend the new BreakoutLog entry to.
     """
-    
-    # Check if buffer is sufficiently filled
     if len(buffer) < 2:
-        return 
+        return
 
-    # Calculate range
-    highs = [c['high'] for c in buffer[:-1]]
-    lows = [c['low'] for c in buffer[:-1]]
-    recent_high = max(highs)
-    recent_low = min(lows)
+    candles = [Candle(**c) for c in buffer]
 
-    # Check for breakout
-    recent_open = buffer[-1]['open']
-    recent_close = buffer[-1]['close']
-    breakoutUp = recent_close > recent_high         #trigger long trade
-    breakoutDown = recent_close < recent_low        #trigger short trade
+    recent_high = max(c.high for c in candles[:-1])
+    recent_low  = min(c.low  for c in candles[:-1])
 
-    # Log minute data
-    breakout_log_data = {
-        "timestamp": format_timestamp(buffer[-1]['close_time']),
-        "high": recent_high,
-        "low": recent_low,
-        "open": recent_open,
-        "close": recent_close,
-        "breakoutUp": breakoutUp,
-        "breakoutDown": breakoutDown
-    }
+    last = candles[-1]
 
-    # Insert into breakout logs (most recent at the top)
-    breakout_logs.insert(0, breakout_log_data)
+    log = BreakoutLog(
+        timestamp=format_timestamp(last.close_time),
+        high=recent_high,
+        low=recent_low,
+        open=last.open,
+        close=last.close,
+        breakoutUp=last.close > recent_high,
+        breakoutDown=last.close < recent_low,
+    )
+
+    breakout_logs.insert(0, log.model_dump())

@@ -1,0 +1,93 @@
+body { background-color: #0d1117; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.header-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #e6edf3;
+    letter-spacing: 0.5px;
+}
+.header-ticker {
+    font-size: 13px;
+    color: #8b949e;
+    margin-left: 12px;
+}
+
+/* ── Stat cards ──────────────────────────────────────────────────────────── */
+.stat-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 16px 20px;
+    min-width: 140px;
+    flex: 1;
+}
+.stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #8b949e;
+    margin-bottom: 6px;
+}
+.stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #e6edf3;
+    font-family: 'Roboto Mono', monospace;
+}
+.stat-value.profit  { color: #3fb950; }
+.stat-value.loss    { color: #f85149; }
+.stat-value.neutral { color: #e6edf3; }
+
+/* ── Section title ───────────────────────────────────────────────────────── */
+.section-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #8b949e;
+    margin-bottom: 12px;
+}
+
+/* ── Breakout table ──────────────────────────────────────────────────────── */
+.breakout-table { width: 100%; border-radius: 10px; overflow: hidden; }
+.breakout-table .q-table__container { background: #161b22 !important; }
+.breakout-table thead tr th {
+    background: #21262d !important;
+    color: #8b949e !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid #30363d !important;
+}
+.breakout-table tbody tr td {
+    color: #c9d1d9 !important;
+    font-size: 13px !important;
+    border-bottom: 1px solid #21262d !important;
+    font-family: 'Roboto Mono', monospace;
+}
+.breakout-table tbody tr:hover td { background: #1c2128 !important; }
+
+/* ── Tabs ────────────────────────────────────────────────────────────────── */
+.q-tab { color: #8b949e !important; font-size: 13px !important; }
+.q-tab--active { color: #58a6ff !important; }
+.q-tab-panels { background: transparent !important; }
+.q-tabs { border-bottom: 1px solid #30363d; }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn-buy  { background: #238636 !important; color: #fff !important; font-weight: 700 !important; min-width: 100px; }
+.btn-sell { background: #da3633 !important; color: #fff !important; font-weight: 700 !important; min-width: 100px; }
+.btn-buy:hover  { background: #2ea043 !important; }
+.btn-sell:hover { background: #f85149 !important; }
+
+/* ── Notifications ───────────────────────────────────────────────────────── */
+.q-notification { background: #161b22 !important; color: #e6edf3 !important; border: 1px solid #30363d; }

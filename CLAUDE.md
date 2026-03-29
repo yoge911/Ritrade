@@ -59,7 +59,7 @@ monitor/candle_roll.py  →  Redis  →  execute/breakout/main.py
 
 Lives at the repo root; used by both monitor and execute layers.
 
-- `core_utils/format.py` — `format_timestamp(ms)` helper used by `execute/core/trade.py`
+- `core_utils/format.py` — `format_timestamp(ms)` helper used by `execute/services/trade.py`
 - `core_utils/logger/log.py` — shared timestamped logger used by `monitor/volume_spike.py` and `monitor/prices.py`
 - `core_utils/tones/` — audio files for macOS `afplay` alerts
 
@@ -115,11 +115,38 @@ Multi-page app. Additional pages live in `pages/` and are auto-loaded by Streaml
 
 ```
 execute/breakout/main.py
-  ├── Kline (breakout/kline.py)      — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
-  ├── strategy.py (breakout/)        — volatility_breakout logic on closed candles → writes breakout_logs to Redis
-  └── Trade (trade/trade.py)
-        ├── PnL (trade/PnL.py)       — stop/target math and floating P&L per tick
+  ├── Kline (services/kline.py)        — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
+  ├── strategy.py (breakout/)          — volatility_breakout logic on closed candles → writes breakout_logs to Redis
+  └── Trade (services/trade.py)
+        ├── PnLCalculator              — stop/target math and floating P&L per tick
+        │   (services/pnl_calculator.py)
         └── subscribes to Redis Pub/Sub ({ticker}_event_channel) for live price updates from Kline
+```
+
+#### Package Layout (`execute/`)
+
+```
+execute/
+  models/               — pure data shapes (Pydantic BaseModel)
+    trade_config.py     TradeConfig
+    candle.py           Candle
+    breakout_log.py     BreakoutLog
+    price_status.py     PriceStatus
+
+  services/             — behaviour / orchestration (plain Python classes)
+    kline.py            Kline        (WebSocket + Redis pub)
+    pnl_calculator.py   PnLCalculator  (stop/target/P&L math)
+    trade.py            Trade        (thread + Redis sub + lifecycle)
+
+  breakout/
+    main.py             entry point
+    strategy.py         volatility_breakout function
+
+  trade/
+    dashboard.py        NiceGUI dashboard
+
+  smc/
+    smc.py / smcplot.py  research prototypes
 ```
 
 #### Redis Keys (written by execute)
@@ -127,8 +154,8 @@ execute/breakout/main.py
 | Key | Written by | Read by | Content |
 |---|---|---|---|
 | `breakout_logs` | `breakout/strategy.py` | `trade/dashboard.py` | per-candle breakout signal log |
-| `{ticker}_status` | `trade/trade.py` (hmset) | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
-| `{ticker}_event_channel` | `breakout/kline.py` (pub) | `trade/trade.py` (sub) | live price ticks via Pub/Sub |
+| `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
+| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub |
 
 #### NiceGUI Dashboard (`execute/trade/dashboard.py`)
 

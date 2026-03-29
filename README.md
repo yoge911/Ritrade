@@ -66,18 +66,45 @@ monitor/candle_roll.py  →  Redis  →  execute/breakout/main.py
 | `minute_logs` | `candle_roll.py` | `app.py` tab 3 | per-minute summaries |
 | `rolling_metrics_logs` | `candle_roll.py` | `app.py` tab 1 | rolling 10s metrics |
 | `breakout_logs` | `breakout/strategy.py` | `trade/dashboard.py` | per-candle breakout signal log |
-| `{ticker}_status` | `trade/trade.py` | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
-| `{ticker}_event_channel` | `breakout/kline.py` (pub) | `trade/trade.py` (sub) | live price ticks via Pub/Sub |
+| `{ticker}_status` | `services/trade.py` | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
+| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub |
 
 ### Execute Layer Flow
 
 ```
 execute/breakout/main.py
-  ├── Kline (breakout/kline.py)   — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
-  ├── strategy.py                 — volatility_breakout on closed candles → writes breakout_logs to Redis
-  └── Trade (trade/trade.py)
-        ├── PnL (trade/PnL.py)    — stop/target math and floating P&L per tick
+  ├── Kline (services/kline.py)       — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
+  ├── strategy.py                     — volatility_breakout on closed candles → writes breakout_logs to Redis
+  └── Trade (services/trade.py)
+        ├── PnLCalculator             — stop/target math and floating P&L per tick
+        │   (services/pnl_calculator.py)
         └── subscribes to {ticker}_event_channel for live price updates
+```
+
+### Execute Package Layout
+
+```
+execute/
+  models/               ← pure data shapes (Pydantic BaseModel)
+    trade_config.py     TradeConfig
+    candle.py           Candle
+    breakout_log.py     BreakoutLog
+    price_status.py     PriceStatus
+
+  services/             ← behaviour / orchestration (plain Python classes)
+    kline.py            Kline          (WebSocket + Redis pub)
+    pnl_calculator.py   PnLCalculator  (stop/target/P&L math)
+    trade.py            Trade          (thread + Redis sub + lifecycle)
+
+  breakout/
+    main.py             entry point
+    strategy.py         volatility_breakout function
+
+  trade/
+    dashboard.py        NiceGUI dashboard
+
+  smc/
+    smc.py / smcplot.py  research prototypes
 ```
 
 ### Time Windows
@@ -119,13 +146,19 @@ Ritrade/
 │           └── vbout.py            # Research: volatility breakout utility
 │
 ├── execute/                        # Active execution layer
+│   ├── models/                     # Pure data shapes (Pydantic BaseModel)
+│   │   ├── trade_config.py         # TradeConfig — ticker, interval, risk/reward params
+│   │   ├── candle.py               # Candle — OHLC + close_time
+│   │   ├── breakout_log.py         # BreakoutLog — per-candle breakout signal
+│   │   └── price_status.py         # PriceStatus — live P&L snapshot written to Redis
+│   ├── services/                   # Behaviour / orchestration (plain Python classes)
+│   │   ├── kline.py                # Kline — WebSocket feed; publishes price to Redis Pub/Sub
+│   │   ├── pnl_calculator.py       # PnLCalculator — stop/target math and floating P&L
+│   │   └── trade.py                # Trade — lifecycle: open, monitor, close
 │   ├── breakout/
-│   │   ├── main.py                 # Entry point: Kline feed + strategy + trade monitor
-│   │   ├── kline.py                # WebSocket @kline_1m feed; publishes price to Redis Pub/Sub
+│   │   ├── main.py                 # Entry point: wires Kline + strategy + Trade
 │   │   └── strategy.py             # volatility_breakout logic on closed candles
 │   ├── trade/
-│   │   ├── trade.py                # Trade lifecycle: open, monitor, close
-│   │   ├── PnL.py                  # Stop/target math and floating P&L
 │   │   └── dashboard.py            # NiceGUI dashboard: trade cards, breakout log, Buy/Sell
 │   └── smc/
 │       ├── smc.py                  # SMC/RIMC detection research prototype
