@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot Lifecycle</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 1000px;
+            width: 100%;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        p.subtitle {
+            text-align: center;
+            color: #7f8c8d;
+            margin-bottom: 40px;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Automated Trading Bot Lifecycle</h1>
+        <p class="subtitle">A visual workflow of the 6 phases of developing an automated trade.</p>
+        
+        <div class="mermaid">
+flowchart TD
+    %% Define Styles
+    classDef data fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff;
+    classDef strategy fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff;
+    classDef risk fill:#e67e22,stroke:#d35400,stroke-width:2px,color:#fff;
+    classDef execute fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff;
+    classDef monitor fill:#f1c40f,stroke:#f39c12,stroke-width:2px,color:#333;
+    classDef exit fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff;
+
+    %% Workflow Steps
+    subgraph Phase 1: Data Acquisition
+        A[Listen to Market Data<br/>WebSocket / REST API]:::data --> B[Clean & Buffer Data<br/>Klindata, Orderbooks, Ticks]:::data
+    end
+
+    subgraph Phase 2: Strategy Logic
+        B --> C{Calculate Indicators<br/>Moving Averages, RSI, etc.}:::strategy
+        C --> D{Entry Signal Triggered?}:::strategy
+    end
+
+    subgraph Phase 3: Risk Management
+        D -- Yes --> E[Check Account Balance]:::risk
+        E --> F[Calculate Position Size<br/>Apply Risk %]:::risk
+        F --> G[Set Hard Limits<br/>Stop Loss & Take Profit Prices]:::risk
+    end
+
+    subgraph Phase 4: Order Execution
+        G --> H[Send 'Open' Order to Exchange<br/>Market or Limit Order]:::execute
+        H --> I{Order Filled?}:::execute
+    end
+
+    subgraph Phase 5: Position Management
+        I -- Yes --> J[Monitor Live Open Position]:::monitor
+        I -- No --> K[Timeout? Cancel Order]:::execute
+        J --> L{Check Exit Conditions}:::monitor
+        L -- Hit Stop Loss --> M[Send 'Close' Order to Exchange]:::exit
+        L -- Hit Take Profit --> M
+        L -- Hit Time Limit --> M
+        L -- No --> J
+    end
+    
+    subgraph Phase 6: Accounting
+        M --> N[Log Trade Details<br/>Save PnL to Database]:::exit
+        N --> O([Return to Phase 1<br/>Wait for next Signal]):::data
+    end
+
+    %% Loop back
+    D -- No Signal --> A
+    K --> O
+        </div>
+    </div>
+    <script>
+        mermaid.initialize({ startOnLoad: true, theme: 'default' });
+    </script>
+</body>
+</html>

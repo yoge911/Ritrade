@@ -1,0 +1,20 @@
+# Web / UI
+streamlit
+streamlit-autorefresh
+nicegui
+
+# Data
+pandas
+numpy
+matplotlib
+pydantic
+
+# Networking
+websockets
+requests
+
+# Database
+redis
+
+# Utilities
+tabulate

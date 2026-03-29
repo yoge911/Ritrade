@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ritrade Volatility Trap - Algorithm Visualization</title>
+    <!-- Load Mermaid from official CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-width: 1000px;
+            width: 100%;
+            margin-bottom: 40px;
+            overflow-x: auto;
+        }
+        h1, h2 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        p.desc {
+            text-align: center;
+            font-size: 1.1em;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+    </style>
+    <script>
+        // Initialize Mermaid with a base theme
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true
+            }
+        });
+    </script>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Ritrade Event Execution Flow</h1>
+        <p class="desc">The core event loop that processes Binance trade stream data, manages rolling 10s/1min buffers, and triggers trap calculations exactly at the 20-second mark.</p>
+        
+        <div class="mermaid">
+flowchart TD
+    Start(["Connect WebSocket: @trade"]) --> WaitMsg{"Wait for next<br>Trade Msg"}
+    
+    WaitMsg --> Parse["Parse Message:<br>Price, Qty, isMaker"]
+    
+    Parse --> TimeCalc["Calculate Timestamps:<br>Minute & Bucket"]
+    
+    %% New Minute Check
+    TimeCalc --> MinCheck{"Trade Minute !=<br>Current Minute?"}
+    MinCheck -- Yes --> MinLog["Log 1-Min Summary<br>to Redis"]
+    MinLog --> MinRes["Reset Master Buffers<br>already_triggered = False"]
+    MinRes --> BuckCheck
+    MinCheck -- No --> BuckCheck
+    
+    %% New Bucket Check
+    BuckCheck{"Trade Bucket !=<br>Current Bucket?"}
+    BuckCheck -- Yes --> BuckLog["Calculate Bucket Metrics:<br>Auth Volume, WAP, StdDev"]
+    BuckLog --> BuckRes["Log Bucket to Redis<br>Reset Bucket Buffers"]
+    BuckRes --> BufUpdate
+    BuckCheck -- No --> BufUpdate
+    
+    %% Master & Bucket Buffers Update
+    BufUpdate["Append Trade Data<br>To Both Buffers"]
+    
+    BufUpdate --> TrapCheck
+    
+    %% Trap Condition Check
+    TrapCheck{"Time exactly between<br>20000ms - 21000ms?"}
+    TrapCheck -- Yes --> FlagCheck{"already_triggered == False?"}
+    FlagCheck -- Yes --> BuildTrap["Generate Trap Data:<br>WAP, Std Dev, Slope, Avg Price"]
+    BuildTrap --> LogTrap["Log Limit Traps to Redis"]
+    LogTrap --> SetFlag["already_triggered = True"]
+    SetFlag --> SaveRedis
+    
+    TrapCheck -- No --> SaveRedis
+    FlagCheck -- No --> SaveRedis
+    
+    %% Save state
+    SaveRedis[/"Save All States To Redis"/] --> WaitMsg
+
+    classDef condition fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff;
+    classDef action fill:#2ecc71,stroke:#27ae60,stroke-width:1px,color:#fff;
+    classDef io fill:#f39c12,stroke:#d35400,stroke-width:1px,color:#fff;
+    
+    class MinCheck,BuckCheck,TrapCheck,FlagCheck condition;
+    class Parse,TimeCalc,MinRes,BuckRes,BufUpdate,BuildTrap,SetFlag action;
+    class Start,WaitMsg,MinLog,BuckLog,LogTrap,SaveRedis io;
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Authenticity & Normalization Logic</h2>
+        <p class="desc">When evaluating a 10s bucket or trap window, the engine clamps raw variables between configured hard bounds to compute a normalized dynamic score between 0 and 1.</p>
+        
+        <div class="mermaid">
+flowchart LR
+    A("Raw Window Data") --> B{"Total Volume<br>Within Bounds?"}
+    B -- No --> Reject["Authenticity = False<br>Dynamic Factor = 0"]
+    B -- Yes --> C{"Trade Count<br>Within Bounds?"}
+    C -- No --> Reject
+    C -- Yes --> D{"Std Deviation<br>Within Bounds?"}
+    D -- No --> Reject
+    
+    D -- Yes --> Accept["Authenticity = True"]
+    
+    Accept --> N1["Normalize Volume<br>(Between min/max)"]
+    Accept --> N2["Normalize Trade Count<br>(Between min/max)"]
+    Accept --> N3["Normalize Std Dev<br>(Between min/max)"]
+    
+    N1 --> DF("Calculate Dynamic Factor:<br>Average of all 3 Metrics")
+    N2 --> DF
+    N3 --> DF
+
+    classDef process fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff;
+    classDef good fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff;
+    classDef bad fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff;
+    
+    class A process;
+    class Accept,DF,N1,N2,N3 good;
+    class Reject bad;
+        </div>
+    </div>
+
+</body>
+</html>
