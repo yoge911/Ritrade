@@ -30,7 +30,7 @@ Redis must be running locally on port 6379 before starting any process.
 cd monitor
 
 python candle_roll.py          # core signal engine — writes to Redis
-streamlit run app.py           # Streamlit dashboard — reads from Redis
+python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
 python volume_spike.py         # optional: volume spike audio alerts for BTC/ETH/SOL/BNB
 python volatility.py           # optional: score top 20 pairs, write top 5 to volatile_tickers.txt
@@ -88,11 +88,14 @@ The thresholds in `candle_roll.py` (and `candle.py`) are specific to **BTCUSDC**
 | `minute_logs` | `candle_roll.py` | `app.py` tab 3 | per-minute summaries |
 | `rolling_metrics_logs` | `candle_roll.py` | `app.py` tab 1 | rolling 10s metrics |
 
-#### Streamlit Dashboard (`app.py`)
+#### Monitor Dashboard (`app.py`)
 
-Multi-page app. Additional pages live in `pages/` and are auto-loaded by Streamlit:
-- `pages/how_it_works.py` — codebase walkthrough
-- `pages/vbout_walkthrough.py` — execute/ codebase walkthrough
+NiceGUI app running on port 8081. Three tabs displaying signal data from Redis:
+- **Micro Buckets (10s)** — rolling window metrics (`rolling_metrics_logs`)
+- **20s Trap Snapshots** — trap trigger data (`trap_logs`)
+- **1-Minute Summary** — per-minute candle summaries (`minute_logs`)
+
+Additional Streamlit pages (`pages/`) are kept for reference but are no longer part of the live system.
 
 #### Supporting Modules
 

@@ -2,12 +2,14 @@ PYTHON    := .venv/bin/python
 STREAMLIT := .venv/bin/streamlit
 RUN_DIR   := .run
 
-.PHONY: start stop redis-check candle-roll main dashboard streamlit volume-spike volatility
+.PHONY: start stop redis-check candle-roll main dashboard monitor volume-spike volatility
 
 # ── Start all required components in the background ────────────────────────────
 start: redis-check | $(RUN_DIR)
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/candle_roll.py > $(RUN_DIR)/candle_roll.log 2>&1 & echo $$! > $(RUN_DIR)/candle_roll.pid
 	@echo "▶  monitor/candle_roll.py      (pid $$(cat $(RUN_DIR)/candle_roll.pid))"
+	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/app.py > $(RUN_DIR)/monitor.log 2>&1 & echo $$! > $(RUN_DIR)/monitor.pid
+	@echo "▶  monitor/app.py              (pid $$(cat $(RUN_DIR)/monitor.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m execute.breakout.main > $(RUN_DIR)/main.log 2>&1 & echo $$! > $(RUN_DIR)/main.pid
 	@echo "▶  execute.breakout.main        (pid $$(cat $(RUN_DIR)/main.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m execute.trade.dashboard > $(RUN_DIR)/dashboard.log 2>&1 & echo $$! > $(RUN_DIR)/dashboard.pid
@@ -36,8 +38,8 @@ main: redis-check
 dashboard:
 	$(PYTHON) -m execute.trade.dashboard
 
-streamlit: redis-check
-	cd monitor && ../.venv/bin/streamlit run app.py
+monitor: redis-check
+	$(PYTHON) monitor/app.py
 
 # ── Optional components ───────────────────────────────────────────────────────
 volume-spike: redis-check

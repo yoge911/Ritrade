@@ -128,7 +128,8 @@ Ritrade/
 ├── monitor/                        # Passive observation layer
 │   ├── candle_roll.py              # Core signal engine — rolling 10s window, trap at 20s
 │   ├── candle.py                   # Older bucket-based engine (kept for reference)
-│   ├── app.py                      # Streamlit dashboard (3 tabs, reads from Redis)
+│   ├── app.py                      # NiceGUI monitor dashboard (3 tabs, port 8081)
+│   ├── dashboard.css               # Monitor dashboard styles
 │   ├── signal_score.py             # Standalone 0–100 signal scorer (not yet integrated)
 │   ├── volume_spike.py             # Independent volume spike audio alerts
 │   ├── volatility.py               # Pre-trade ticker selection (top 20 USDT pairs)
@@ -211,8 +212,9 @@ Starts the three core processes in the background. Logs are written to `.run/*.l
 ```
 ✅  Redis OK
 ▶  monitor/candle_roll.py      (pid 12345)
-▶  execute.breakout.main        (pid 12346)
-▶  execute.trade.dashboard      (pid 12347)
+▶  monitor/app.py              (pid 12346)
+▶  execute.breakout.main        (pid 12347)
+▶  execute.trade.dashboard      (pid 12348)
 
 Logs → .run/   |   Stop with: make stop
 ```
@@ -228,15 +230,16 @@ make stop
 After `make start`, confirm all three processes are alive:
 
 ```bash
-ps aux | grep -E "candle_roll|execute.breakout|execute.trade" | grep -v grep
+ps aux | grep -E "candle_roll|monitor/app|execute.breakout|execute.trade" | grep -v grep
 ```
 
 Expected output — one line per process:
 
 ```
 user  12345  ...  python monitor/candle_roll.py
-user  12346  ...  python -m execute.breakout.main
-user  12347  ...  python -m execute.trade.dashboard
+user  12346  ...  python monitor/app.py
+user  12347  ...  python -m execute.breakout.main
+user  12348  ...  python -m execute.trade.dashboard
 ```
 
 If a process is missing it crashed on startup — check its log (see below).
@@ -254,8 +257,9 @@ Each process writes to its own log file in `.run/`. Tail them individually:
 
 ```bash
 tail -f .run/candle_roll.log   # monitor signal engine
+tail -f .run/monitor.log       # monitor NiceGUI dashboard
 tail -f .run/main.log          # execute engine
-tail -f .run/dashboard.log     # NiceGUI dashboard
+tail -f .run/dashboard.log     # execute NiceGUI dashboard
 ```
 
 To watch all three at once:
@@ -271,9 +275,9 @@ tail -f .run/*.log
 | Command | What it runs |
 |---|---|
 | `make candle-roll` | Monitor signal engine |
+| `make monitor` | Monitor NiceGUI dashboard (port 8081) |
 | `make main` | Execute engine (Kline + strategy + trade) |
-| `make dashboard` | NiceGUI trade dashboard |
-| `make streamlit` | Streamlit monitor dashboard |
+| `make dashboard` | Execute NiceGUI dashboard (port 8080) |
 | `make volume-spike` | Volume spike audio alerts |
 | `make volatility` | Ticker scorer |
 
@@ -289,7 +293,7 @@ All targets that require Redis call `redis-check` first and fail fast if it is n
 cd monitor
 
 python candle_roll.py          # core signal engine — writes to Redis
-streamlit run app.py           # Streamlit dashboard — reads from Redis
+python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
 python volume_spike.py         # optional: volume spike audio alerts
 python volatility.py           # optional: score top 20 pairs → volatile_tickers.txt
@@ -341,9 +345,9 @@ The authenticity thresholds in `candle_roll.py` are specific to **BTCUSDC** and 
 
 ## Dashboards
 
-### Streamlit (`monitor/app.py`)
+### Monitor Dashboard (`monitor/app.py`) — port 8081
 
-Reads from Redis, auto-refreshes. Three tabs:
+NiceGUI app. Read-only signal observer. Three tabs:
 
 | Tab | Content |
 |---|---|
@@ -351,9 +355,7 @@ Reads from Redis, auto-refreshes. Three tabs:
 | 20s Trap Snapshots | Trap trigger data: WAP, std_dev, slope, volumes (`trap_logs`) |
 | 1-Minute Summary | Per-minute trade count, volume, buy/sell breakdown (`minute_logs`) |
 
-Additional pages auto-loaded by Streamlit from `pages/`.
-
-### NiceGUI (`execute/trade/dashboard.py`)
+### Execution Dashboard (`execute/trade/dashboard.py`) — port 8080
 
 Interactive execution UI. Runs standalone on port 8080:
 

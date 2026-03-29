@@ -1,61 +1,104 @@
-# streamlit_app.py
-import streamlit as st
-import pandas as pd
+import json
+import os
 from datetime import datetime
 import redis
-import json
-from streamlit_autorefresh import st_autorefresh
+from nicegui import ui
 
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-# Auto-refresh
-st.set_page_config(page_title="🚀 Ritrade Dashboard", layout="wide")
-st_autorefresh(interval=1000, key="data_refresh")  # Refresh every second
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB   = 0
 
-# Initialize Redis connection
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
-# Load live data from Redis
-trap_logs = json.loads(r.get("trap_logs") or "[]")
-minute_logs = json.loads(r.get("minute_logs") or "[]")
-rolling_metrics_logs = json.loads(r.get("rolling_metrics_logs") or "[]")
+CSS_PATH = os.path.join(os.path.dirname(__file__), 'dashboard.css')
 
-# Title
-st.title("🚀 Dashboard")
-st.markdown("---")
+# ── Data loading ──────────────────────────────────────────────────────────────
 
+def load(key: str, limit: int = 60) -> list[dict]:
+    """Read a JSON list from Redis, returning at most `limit` entries."""
+    return json.loads(redis_client.get(key) or '[]')[:limit]
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["📊 Micro Buckets (10s)", "🛠️ 20s Trap Snapshots", "⏱️ 1-Minute Summary"])
+def make_columns(rows: list[dict]) -> list[dict]:
+    """Build NiceGUI table column definitions from the keys of the first row."""
+    if not rows:
+        return []
+    return [{'name': k, 'label': k.upper(), 'field': k, 'align': 'left'} for k in rows[0].keys()]
 
-# Convert to DataFrames
-rolling_metrics_logs_df = pd.DataFrame(rolling_metrics_logs)
-trap_df = pd.DataFrame(trap_logs)
-minute_df = pd.DataFrame(minute_logs)
+# ── Page ──────────────────────────────────────────────────────────────────────
 
+@ui.page('/')
+def main():
+    with open(CSS_PATH) as f:
+        ui.add_head_html(f'<style>{f.read()}</style>')
 
+    # ── Header ────────────────────────────────────────────────────────────────
+    with ui.element('div').classes('header w-full'):
+        with ui.row().classes('items-center gap-0'):
+            ui.label('Ritrade').classes('header-title')
+            ui.label('Monitor · BTCUSDC').classes('header-subtitle')
+        last_updated = ui.label('—').classes('header-timestamp')
 
+    # ── Main content ──────────────────────────────────────────────────────────
+    with ui.column().classes('w-full q-pa-lg gap-4'):
 
-# Display tables inside tabs
-with tab1:
-    st.subheader("📊 (10s Rolling Window)")
-    if not rolling_metrics_logs_df.empty:
-        st.dataframe(rolling_metrics_logs_df.tail(60).iloc[::-1])
-    else:
-        st.info("Waiting for Rolling Metrics data...")
+        with ui.tabs().props('align=left dense').classes('w-full') as tabs:
+            tab_rolling = ui.tab('Micro Buckets (10s)').props('no-caps')
+            tab_trap    = ui.tab('20s Trap Snapshots').props('no-caps')
+            tab_minute  = ui.tab('1-Minute Summary').props('no-caps')
 
-with tab2:
-    st.subheader("🛠️ 20s Trap Snapshots")
-    if not trap_df.empty:
-        st.dataframe(trap_df.tail(60).iloc[::-1])
-    else:
-        st.info("Waiting for trap snapshots...")
+        with ui.tab_panels(tabs, value=tab_rolling).classes('w-full'):
 
-with tab3:
-    st.subheader("⏱️ 1-Minute Candle Summary")
-    if not minute_df.empty:
-        st.dataframe(minute_df.tail(60).iloc[::-1])
-    else:
-        st.info("Waiting for 1-min candle summaries...")
+            with ui.tab_panel(tab_rolling):
+                ui.label('10s Rolling Window').classes('section-title')
+                rolling_empty = ui.label('Waiting for rolling metrics data…').classes('empty-state')
+                rolling_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
 
-# Footer
-st.caption(f"⏰ Last refreshed: {datetime.now().strftime('%H:%M:%S')}")
+            with ui.tab_panel(tab_trap):
+                ui.label('20s Trap Snapshots').classes('section-title')
+                trap_empty = ui.label('Waiting for trap snapshots…').classes('empty-state')
+                trap_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
+
+            with ui.tab_panel(tab_minute):
+                ui.label('1-Minute Candle Summary').classes('section-title')
+                minute_empty = ui.label('Waiting for 1-min candle summaries…').classes('empty-state')
+                minute_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
+
+    # ── Periodic update ───────────────────────────────────────────────────────
+    def update_ui():
+        rolling = load('rolling_metrics_logs')
+        trap    = load('trap_logs')
+        minute  = load('minute_logs')
+
+        # Rolling metrics
+        rolling_empty.set_visibility(not rolling)
+        rolling_table.set_visibility(bool(rolling))
+        if rolling:
+            rolling_table.columns = make_columns(rolling)
+            rolling_table.rows    = rolling
+            rolling_table.update()
+
+        # Trap snapshots
+        trap_empty.set_visibility(not trap)
+        trap_table.set_visibility(bool(trap))
+        if trap:
+            trap_table.columns = make_columns(trap)
+            trap_table.rows    = trap
+            trap_table.update()
+
+        # Minute summaries
+        minute_empty.set_visibility(not minute)
+        minute_table.set_visibility(bool(minute))
+        if minute:
+            minute_table.columns = make_columns(minute)
+            minute_table.rows    = minute
+            minute_table.update()
+
+        last_updated.text = f"Updated {datetime.now().strftime('%H:%M:%S')}"
+
+    ui.timer(2.0, update_ui)
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+
+ui.run(title='Ritrade Monitor', dark=True, favicon='📊', port=8081)
