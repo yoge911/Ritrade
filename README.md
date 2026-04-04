@@ -2,7 +2,7 @@
 
 An automated cryptocurrency trading system built around a **volatility trap strategy** on 1-minute candles. Split into two independent layers that communicate via Redis.
 
-- **`monitor/`** — passive observation: signal generation, Redis publishing, Streamlit dashboard
+- **`monitor/`** — passive observation: signal generation, Redis publishing, NiceGUI dashboard
 - **`execute/`** — active execution: strategy evaluation, trade lifecycle, NiceGUI dashboard
 
 ---
@@ -28,7 +28,7 @@ Compute dynamic_factor        Skip This Candle
 Fire trap snapshot → Redis
         ↓
 Execute layer reads signal
-Evaluate volatility breakout
+Evaluate entry via strategy
 Manage trade lifecycle (SL / TP)
 ```
 
@@ -54,57 +54,72 @@ A 0–1 score computed as the average of three normalized values (volume, std_de
 
 ```
 monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
-                                  →  monitor/app.py        (Streamlit, read-only)
-                                  →  execute/trade/dashboard.py  (NiceGUI, interactive)
+                                       →  monitor/app.py          (NiceGUI, read-only, port 8081)
+                                       →  execute/trade/dashboard.py  (NiceGUI, interactive, port 8080)
 ```
 
 ### Redis Keys
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `trap_logs` | `activity_monitor.py` | `app.py` tab 2, `execute/trade/dashboard.py` | 20s trap snapshots |
-| `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
-| `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1 | rolling 10s metrics |
-| `breakout_logs` | `breakout/strategy.py` | `trade/dashboard.py` | per-candle breakout signal log |
-| `{ticker}_status` | `services/trade.py` | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
-| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub |
+| `rolling_metrics_logs` | `activity_monitor.py` | `monitor/app.py` tab 1 | Rolling 10s window metrics |
+| `trap_logs` | `activity_monitor.py` | `monitor/app.py` tab 2 | 20s trap snapshots |
+| `minute_logs` | `activity_monitor.py` | `monitor/app.py` tab 3 | Per-minute summaries |
+| `{ticker}_activity_snapshots` | `activity_monitor.py` (pending) | `trade/dashboard.py` signals table | Per-ticker activity scores |
+| `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` pinned panels | Full trade state: price, P&L, SL, TP, decisions |
+| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | Live price ticks via Pub/Sub |
+| `execution_commands` | `trade/dashboard.py` (pub) | `breakout/main.py` (sub) | JSON commands: pin, order, cancel, close |
+| `execution_pinned_tickers` | `breakout/main.py` (sadd/srem) | `breakout/main.py` (smembers) | Set of pinned tickers, persisted across restarts |
 
 ### Execute Layer Flow
 
 ```
-execute/breakout/main.py
-  ├── Kline (services/kline.py)       — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
-  ├── strategy.py                     — volatility_breakout on closed candles → writes breakout_logs to Redis
-  └── Trade (services/trade.py)
-        ├── PnLCalculator             — stop/target math and floating P&L per tick
-        │   (services/pnl_calculator.py)
-        └── subscribes to {ticker}_event_channel for live price updates
+execute/breakout/main.py  →  ExecutionController
+  ├── loads tickers_config.json            — list of supported tickers
+  ├── subscribes to execution_commands     — pin/unpin, place/cancel/close orders
+  ├── restores execution_pinned_tickers    — persisted pinned set across restarts
+  └── per pinned ticker:
+        ├── Kline (services/kline.py)      — WebSocket @kline_1m; publishes live_price to Redis
+        └── Trade (services/trade.py)
+              ├── state machine: idle → pending_entry → open → closed
+              ├── ManualEntryStrategy      — validates entry, derives stop/target
+              ├── FixedStopExitStrategy    — monitors stop hit
+              ├── ExecutionService         — thin actuator: open/close/modify_stop
+              └── PnLCalculator            — stop/target math and floating P&L per tick
 ```
 
 ### Execute Package Layout
 
 ```
 execute/
-  models/               ← pure data shapes (Pydantic BaseModel)
-    trade_config.py     TradeConfig
-    candle.py           Candle
-    breakout_log.py     BreakoutLog
-    price_status.py     PriceStatus
+  models/                 — pure data shapes (Pydantic BaseModel)
+    trade_config.py       TradeConfig
+    candle.py             Candle
+    breakout_log.py       BreakoutLog
+    price_status.py       PriceLevels  (dashboard-facing Redis hash shape)
+    trade_runtime.py      TradeState, MarketSnapshot, EntryDecision, ExitDecision, type aliases
 
-  services/             ← behaviour / orchestration (plain Python classes)
-    kline.py            Kline          (WebSocket + Redis pub)
-    pnl_calculator.py   PnLCalculator  (stop/target/P&L math)
-    trade.py            Trade          (thread + Redis sub + lifecycle)
+  services/               — behaviour / orchestration
+    kline.py              Kline          (WebSocket + Redis pub; stop() for graceful shutdown)
+    pnl_calculator.py     PnLCalculator  (stop/target/P&L math; returns PriceLevels)
+    trade.py              Trade          (thread + Redis sub + state machine + strategy wiring)
+    execution.py          ExecutionService  (thin actuator: open/close/modify_stop)
+
+  strategy/               — pluggable strategy layer
+    base.py               EntryStrategy (ABC), ExitStrategy (ABC)
+    fixed_stop.py         FixedStopExitStrategy
+    manual_entry.py       ManualEntryStrategy
 
   breakout/
-    main.py             entry point
-    strategy.py         volatility_breakout function
+    main.py               ExecutionController entry point
+    strategy.py           volatility_breakout function (not currently wired into main.py)
 
   trade/
-    dashboard.py        NiceGUI dashboard
+    dashboard.py          NiceGUI dashboard (port 8080)
+    dashboard.css         styles
 
   smc/
-    smc.py / smcplot.py  research prototypes
+    smc.py / smcplot.py   research prototypes
 ```
 
 ### Time Windows
@@ -126,14 +141,13 @@ Ritrade/
 │   └── tones/                      # Audio files for macOS afplay alerts
 │
 ├── monitor/                        # Passive observation layer
-│   ├── activity_monitor.py              # Core signal engine — rolling 10s window, trap at 20s
+│   ├── activity_monitor.py         # Core signal engine — rolling 10s window, trap at 20s
 │   ├── candle.py                   # Older bucket-based engine (kept for reference)
 │   ├── app.py                      # NiceGUI monitor dashboard (3 tabs, port 8081)
-│   ├── dashboard.css               # Monitor dashboard styles
 │   ├── signal_score.py             # Standalone 0–100 signal scorer (not yet integrated)
 │   ├── volume_spike.py             # Independent volume spike audio alerts
 │   ├── volatility.py               # Pre-trade ticker selection (top 20 USDT pairs)
-│   ├── prices.py                   # Early price prototype (superseded by activity_monitor.py)
+│   ├── prices.py                   # Early price prototype (superseded)
 │   ├── pages/
 │   │   ├── how_it_works.py         # Streamlit page: monitor codebase walkthrough
 │   │   └── vbout_walkthrough.py    # Streamlit page: execute codebase walkthrough
@@ -151,19 +165,30 @@ Ritrade/
 │   │   ├── trade_config.py         # TradeConfig — ticker, interval, risk/reward params
 │   │   ├── candle.py               # Candle — OHLC + close_time
 │   │   ├── breakout_log.py         # BreakoutLog — per-candle breakout signal
-│   │   └── price_status.py         # PriceStatus — live P&L snapshot written to Redis
-│   ├── services/                   # Behaviour / orchestration (plain Python classes)
+│   │   ├── price_status.py         # PriceLevels — Redis hash shape read by dashboard
+│   │   └── trade_runtime.py        # TradeState, MarketSnapshot, EntryDecision, ExitDecision
+│   ├── services/                   # Behaviour / orchestration
 │   │   ├── kline.py                # Kline — WebSocket feed; publishes price to Redis Pub/Sub
 │   │   ├── pnl_calculator.py       # PnLCalculator — stop/target math and floating P&L
-│   │   └── trade.py                # Trade — lifecycle: open, monitor, close
+│   │   ├── trade.py                # Trade — state machine + strategy orchestration
+│   │   └── execution.py            # ExecutionService — thin actuator (open/close/modify_stop)
+│   ├── strategy/                   # Pluggable strategy layer
+│   │   ├── base.py                 # EntryStrategy + ExitStrategy ABCs
+│   │   ├── fixed_stop.py           # FixedStopExitStrategy
+│   │   └── manual_entry.py         # ManualEntryStrategy
 │   ├── breakout/
-│   │   ├── main.py                 # Entry point: wires Kline + strategy + Trade
-│   │   └── strategy.py             # volatility_breakout logic on closed candles
+│   │   ├── main.py                 # ExecutionController entry point
+│   │   └── strategy.py             # volatility_breakout logic (not yet wired into main.py)
 │   ├── trade/
-│   │   └── dashboard.py            # NiceGUI dashboard: trade cards, breakout log, Buy/Sell
+│   │   ├── dashboard.py            # NiceGUI dashboard — pinned panels + signals table
+│   │   └── dashboard.css           # Dashboard styles
 │   └── smc/
 │       ├── smc.py                  # SMC/RIMC detection research prototype
 │       └── smcplot.py              # Matplotlib plot extraction (work in progress)
+│
+├── tests/                          # pytest suite
+│   ├── conftest.py                 # sys.path setup, FakeRedis stub
+│   └── test_trade_runtime.py       # Trade lifecycle tests
 │
 ├── archive/
 │   └── candle_old.py               # Superseded bucket-based candle engine
@@ -171,6 +196,7 @@ Ritrade/
 ├── simulations/
 │   └── bracketing_income.py        # Standalone income/bracketing simulation
 │
+├── tickers_config.json             # Calibrated thresholds per ticker (BTCUSDC, SOLUSDC)
 ├── Makefile                        # Start / stop / run individual components
 ├── requirements.txt
 └── .env
@@ -207,14 +233,14 @@ The Makefile is the recommended way to start the system.
 make start
 ```
 
-Starts the three core processes in the background. Logs are written to `.run/*.log` and PIDs tracked in `.run/*.pid`.
+Stops any existing processes first, then starts all four components in the background. Logs are written to `.run/*.log` and PIDs tracked in `.run/*.pid`.
 
 ```
 ✅  Redis OK
 ▶  monitor/activity_monitor.py      (pid 12345)
-▶  monitor/app.py              (pid 12346)
-▶  execute.breakout.main        (pid 12347)
-▶  execute.trade.dashboard      (pid 12348)
+▶  monitor/app.py                   (pid 12346)
+▶  execute.breakout.main            (pid 12347)
+▶  execute.trade.dashboard          (pid 12348)
 
 Logs → .run/   |   Stop with: make stop
 ```
@@ -225,61 +251,27 @@ Logs → .run/   |   Stop with: make stop
 make stop
 ```
 
-### Verify processes are running
-
-After `make start`, confirm all three processes are alive:
-
-```bash
-ps aux | grep -E "activity_monitor|monitor/app|execute.breakout|execute.trade" | grep -v grep
-```
-
-Expected output — one line per process:
-
-```
-user  12345  ...  python monitor/activity_monitor.py
-user  12346  ...  python monitor/app.py
-user  12347  ...  python -m execute.breakout.main
-user  12348  ...  python -m execute.trade.dashboard
-```
-
-If a process is missing it crashed on startup — check its log (see below).
-
-You can also verify the NiceGUI dashboard came up by checking its log directly:
-
-```bash
-cat .run/dashboard.log
-# NiceGUI ready to go on http://localhost:8080, and http://192.168.x.x:8080
-```
-
 ### Tailing logs
-
-Each process writes to its own log file in `.run/`. Tail them individually:
 
 ```bash
 tail -f .run/activity_monitor.log   # monitor signal engine
-tail -f .run/monitor.log       # monitor NiceGUI dashboard
-tail -f .run/main.log          # execute engine
-tail -f .run/dashboard.log     # execute NiceGUI dashboard
+tail -f .run/monitor.log            # monitor NiceGUI dashboard
+tail -f .run/main.log               # execute engine
+tail -f .run/dashboard.log          # execute NiceGUI dashboard
+
+tail -f .run/*.log                  # all at once
 ```
-
-To watch all three at once:
-
-```bash
-tail -f .run/*.log
-```
-
-`tail -f` will show the filename header when multiple files are tailed together, so you can tell which process each line came from.
 
 ### Individual components (foreground, useful for debugging)
 
-| Command | What it runs |
-|---|---|
-| `make candle-roll` | Monitor signal engine |
-| `make monitor` | Monitor NiceGUI dashboard (port 8081) |
-| `make main` | Execute engine (Kline + strategy + trade) |
-| `make dashboard` | Execute NiceGUI dashboard (port 8080) |
-| `make volume-spike` | Volume spike audio alerts |
-| `make volatility` | Ticker scorer |
+| Command | What it runs | Port |
+|---|---|---|
+| `make activity-monitor` | Monitor signal engine | — |
+| `make monitor` | Monitor NiceGUI dashboard | 8081 |
+| `make main` | Execute engine (Kline + Trade) | — |
+| `make dashboard` | Execute NiceGUI dashboard | 8080 |
+| `make volume-spike` | Volume spike audio alerts | — |
+| `make volatility` | Ticker scorer → volatile_tickers.txt | — |
 
 All targets that require Redis call `redis-check` first and fail fast if it is not up.
 
@@ -292,27 +284,81 @@ All targets that require Redis call `redis-check` first and fail fast if it is n
 ```bash
 cd monitor
 
-python activity_monitor.py          # core signal engine — writes to Redis
-python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
+python activity_monitor.py   # core signal engine — writes to Redis
+python app.py                # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
-python volume_spike.py         # optional: volume spike audio alerts
-python volatility.py           # optional: score top 20 pairs → volatile_tickers.txt
+python volume_spike.py       # optional: volume spike audio alerts
+python volatility.py         # optional: score top 20 pairs → volatile_tickers.txt
 ```
 
 ### Execute (run from repo root)
 
 ```bash
 python -m execute.breakout.main      # execution engine
-python -m execute.trade.dashboard    # NiceGUI dashboard
+python -m execute.trade.dashboard    # NiceGUI dashboard (port 8080)
 ```
 
 > Execute scripts use package-style imports and must be run as modules (`python -m`) from the repo root. Monitor scripts must be run from within `monitor/`.
 
 ---
 
+## Control Flow: Manual vs Automated
+
+The execute layer supports two control modes per trade:
+
+| Mode | Behaviour |
+|---|---|
+| `manual` | Strategy decisions are computed and stored in `strategy_state` as recommendations, but not acted on. Human confirms via dashboard. |
+| `automated` | Strategy decisions are applied immediately — limit fills, stop hits, and exit triggers execute without human input. |
+
+`control_mode` is set at order placement (`submit_entry(initiated_by=..., control_mode=...)`) and can be overridden mid-trade. Any manual action (modify stop, close) automatically seizes manual control.
+
+---
+
+## Dashboards
+
+### Monitor Dashboard (`monitor/app.py`) — port 8081
+
+NiceGUI app. Read-only signal observer. Three tabs:
+
+| Tab | Redis Key | Content |
+|---|---|---|
+| Micro Buckets (10s) | `rolling_metrics_logs` | Rolling 10s window metrics |
+| 20s Trap Snapshots | `trap_logs` | WAP, std_dev, slope, volumes at trap time |
+| 1-Minute Summary | `minute_logs` | Per-minute trade count, volume, buy/sell breakdown |
+
+### Execution Dashboard (`execute/trade/dashboard.py`) — port 8080
+
+Interactive execution surface. Two sections:
+
+**Pinned Tickers** — one card per pinned ticker:
+- Live Price, Floating P&L, Zone, Entry, Stop, Target
+- Buy (long limit), Sell (short limit), Trail, Close buttons
+
+**Monitoring Snapshots** — tabbed feed from monitor:
+- 20s Snapshots: per-ticker activity score, qualified status, trades, volume, WAP, slope
+- 1m Signal Snapshots: per-minute candle summary per ticker
+
+---
+
+## Ticker Configuration (`tickers_config.json`)
+
+Repo-root JSON listing supported tickers with calibrated thresholds. Both the monitor and execute layers load from this file.
+
+```json
+[
+  { "ticker": "BTCUSDC", "min_volume_threshold": ..., "max_volume_threshold": ..., ... },
+  { "ticker": "SOLUSDC", ... }
+]
+```
+
+The authenticity thresholds are specific to each ticker and were derived from baseline data in `monitor/research/`. Changing or adding a ticker requires recalibrating its thresholds.
+
+---
+
 ## Signal Score (`monitor/signal_score.py`)
 
-Standalone utility that computes a **0–100 signal strength score** from:
+Standalone utility. Computes a **0–100 signal strength score** from:
 
 | Component | Weight | Description |
 |---|---|---|
@@ -324,56 +370,15 @@ Not yet integrated into the live engine.
 
 ---
 
-## Ticker Selection (`monitor/volatility.py`)
+## Next Integration Points
 
-Scans the top 20 market-cap USDT pairs on Binance and scores them by:
-
-- Price change over last 15 candles (×2.5 weight)
-- Quote volume (log-scaled)
-- Average spread penalty (×1.5)
-- Low volume penalty if quote volume < $500,000
-
-Top 5 tickers are saved to `monitor/research/volatile_tickers.txt`.
-
----
-
-## Calibrated Thresholds
-
-The authenticity thresholds in `activity_monitor.py` are specific to **BTCUSDC** and were derived from baseline data in `monitor/research/`. The archived `tickerstat.py` generated those `.csv` files. Changing the ticker requires recalibrating all threshold values.
-
----
-
-## Dashboards
-
-### Monitor Dashboard (`monitor/app.py`) — port 8081
-
-NiceGUI app. Read-only signal observer. Three tabs:
-
-| Tab | Content |
-|---|---|
-| Micro Buckets (10s) | Rolling 10s window metrics (`rolling_metrics_logs`) |
-| 20s Trap Snapshots | Trap trigger data: WAP, std_dev, slope, volumes (`trap_logs`) |
-| 1-Minute Summary | Per-minute trade count, volume, buy/sell breakdown (`minute_logs`) |
-
-### Execution Dashboard (`execute/trade/dashboard.py`) — port 8080
-
-Interactive execution UI. Runs standalone on port 8080:
-
-- Live trade status cards (price, P&L, SL, TP)
-- Breakout log table
-- Buy / Sell buttons
-
----
-
-## Next Integration Point
-
-`execute/breakout/strategy.py` currently implements a simple price range breakout. The calibrated volatility trap logic from `monitor/activity_monitor.py` (including `dynamic_factor` and authenticity checks) has not yet been ported into the execute layer. This is the next planned integration.
+1. **Monitor → per-ticker snapshots**: `activity_monitor.py` needs to write `{ticker}_activity_snapshots` keys so the execute dashboard signals table shows live data.
+2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — wiring it into `ExecutionController.start_kline` would enable automated breakout detection per ticker.
 
 ---
 
 ## Infrastructure
 
 - **Binance WebSocket** — live trade stream (`@trade`) and kline stream (`@kline_1m`)
-- **Redis** — in-memory message bus shared between monitor and execute layers
-- **Streamlit** — monitor dashboard
-- **NiceGUI** — execution dashboard
+- **Redis** — in-memory message bus shared between monitor and execute layers (port 6379)
+- **NiceGUI** — both monitor and execution dashboards

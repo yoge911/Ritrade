@@ -1,99 +1,153 @@
-# Trade Execution Flow Visualization
+# Trade Execution Flow
 
-This document outlines the end-to-end execution flow of the `Ritrade` trading system, centered around the `ExecutionController`, `Trade` service, and modular strategies.
+End-to-end execution flow of the `Ritrade` trading system, centered around `ExecutionController`, `Trade`, and the modular strategy layer.
 
-## Overview of the Flow
+## Overview
 
-1. **Commands & Interaction:** The entry point for trade actions is the `ExecutionController`, which listens for JSON commands via a Redis channel.
-2. **Strategy Evaluation:** When placing orders, checking for entry triggers, or managing an open position, the `Trade` class delegates the logic to an `EntryStrategy` or `ExitStrategy`.
-3. **Price Monitoring:** Once a trade is initialized, the `Trade` class runs a background thread `listen_price_updates()` that listens to a localized redis event channel for tick/kline data.
-4. **State Actuation:** State changes representing executed actions are eventually passed to the `ExecutionService` and written back out to Redis for the UI.
+1. **Commands:** The dashboard publishes JSON commands to `execution_commands`. `ExecutionController` consumes them and routes to the relevant `Trade` instance.
+2. **Strategy evaluation:** Entry and exit logic is delegated to `EntryStrategy` / `ExitStrategy` implementations. The `Trade` class never contains strategy logic directly.
+3. **Control mode:** If `control_mode='manual'`, strategy decisions are stored as recommendations but not acted on — the human confirms via the dashboard. If `'automated'`, decisions execute immediately.
+4. **Price monitoring:** Each `Trade` runs a background thread (`listen_price_updates`) subscribed to `{ticker}_event_channel`. Every price tick triggers entry fill checks and exit evaluation.
+5. **State actuation:** `ExecutionService` applies state changes to `TradeState`. `PnLCalculator.build_status()` serializes the result to the `{ticker}_status` Redis hash for the dashboard to read.
 
-## Mermaid Visualization
+---
+
+## Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-    participant User/UI
+    participant UI as Dashboard (UI)
     participant EC as ExecutionController
     participant T as Trade
     participant EK as Kline (Service)
-    participant ES_Entry as EntryStrategy<br/>(e.g., ManualEntryStrategy)
-    participant ES_Exit as ExitStrategy<br/>(e.g., FixedStopExitStrategy)
+    participant ES_Entry as EntryStrategy
+    participant ES_Exit as ExitStrategy
     participant ExS as ExecutionService
-    participant Redis as Redis PubSub
+    participant PnL as PnLCalculator
+    participant Redis as Redis
 
-    %% 1. Initialization and Commands
-    User/UI->>Redis: Publish command (e.g., 'place_limit_order')
+    %% 1. Command routing
+    UI->>Redis: Publish command (e.g. 'place_limit_order')
     Redis->>EC: get_message() via 'execution_commands'
     EC->>EC: handle_command()
 
-    %% 2. Handling Limits
-    EC->>T: place_limit_order() / submit_entry()
+    %% 2. Entry request
+    EC->>T: submit_entry(position_type, limit_price, initiated_by, control_mode)
     T->>ES_Entry: evaluate_manual_entry(intent, state, snapshot)
-    ES_Entry-->>T: EntryDecision (is_valid, prices...)
-    
+    ES_Entry-->>T: EntryDecision (is_valid, entry_price, initial_stop_price)
+
     alt is_valid == True
         T->>T: state.lifecycle_state = 'pending_entry'
-        T->>T: write_status()
-        EC->>EK: start_kline() listener
-        EK-->>Redis: Broadcast 'live_price' on {ticker}_event_channel
+        T->>T: state.limit_price, stop_price set
+        T->>Redis: write_status() → {ticker}_status
+        EC->>EK: start_kline(ticker)
+        EK-->>Redis: Publish 'live_price' → {ticker}_event_channel
     end
 
-    %% 3. Price Monitoring and Pending Order Fill
-    loop Every Price Update
-        Redis->>T: listen_price_updates() receives 'live_price'
+    %% 3. Price loop
+    loop Every Price Tick
+        Redis->>T: listen_price_updates() receives live_price
         T->>T: handle_live_price(current_price)
-        
-        %% Pending Entry
-        T->>T: evaluate_pending_entry(snapshot)
+
+        %% Pending fill check
         T->>ES_Entry: evaluate_pending_entry(state, snapshot)
-        ES_Entry-->>T: EntryDecision (action='open_long', etc.)
-        
-        alt action == 'open_long' | 'open_short'
-            T->>T: open_position(entry_price, stop_price)
+        ES_Entry-->>T: EntryDecision (action='keep_pending' | 'open_long' | 'open_short')
+
+        alt control_mode == 'automated' AND action == 'open_long'|'open_short'
             T->>ExS: open_position(state, entry_price, stop_price)
-            ExS-->>T: Updates state to 'open'
+            ExS-->>T: state.lifecycle_state = 'open'
+            T->>PnL: derive_levels() → target_price
+        else control_mode == 'manual'
+            T->>T: store recommendation in strategy_state only
         end
 
-        %% Managing Exit & Trailing Stops
-        T->>T: evaluate_exit(snapshot)
+        %% Exit evaluation
         T->>ES_Exit: evaluate(state, snapshot)
-        ES_Exit-->>T: ExitDecision (action='move_stop', 'exit_now', 'hold')
-        
-        alt action == 'move_stop'
+        ES_Exit-->>T: ExitDecision (action='hold' | 'move_stop' | 'exit_now')
+
+        alt control_mode == 'automated' AND action == 'move_stop'
             T->>ExS: modify_stop(state, stop_price)
-        else action == 'exit_now'
+        else control_mode == 'automated' AND action == 'exit_now'
             T->>ExS: close_position(state, reason)
+        else control_mode == 'manual'
+            T->>T: store recommendation in strategy_state only
         end
-        
-        %% 4. PnL Output
-        T->>T: recompute_status() 
-        T->>Redis: write_status() (Updates {ticker}_status hash)
+
+        T->>PnL: build_status(state, last_update)
+        T->>Redis: write_status() → {ticker}_status
     end
+
+    %% 4. Manual override
+    UI->>Redis: Publish 'modify_stop' | 'close_position'
+    Redis->>EC: get_message()
+    EC->>T: modify_stop(stop_price) | close_position()
+    T->>T: take_manual_control() — sets control_mode='manual'
+    T->>ExS: modify_stop() | close_position()
+    T->>Redis: write_status()
 ```
+
+---
 
 ## Key Classes & Methods
 
-### 1. `ExecutionController` (`execute/breakout/main.py`)
-- **`run()`**: Subscribes to `COMMAND_CHANNEL` (`execution_commands`) and polls for user commands (e.g. from the UI).
-- **`handle_command(command)`**: Routes valid commands (`pin_ticker`, `place_limit_order`, `cancel_order`, `close_position`) to the specific ticker's `Trade` object.
-- **`start_kline(ticker)`**: Spawns a listening task for `Kline` to start streaming data.
+### `ExecutionController` (`execute/breakout/main.py`)
 
-### 2. `Trade` (`execute/services/trade.py`)
-This is the core engine for an individual ticker's runtime execution.
-- **`start()` / `listen_price_updates()`**: Starts a daemon thread listening on `{ticker}_event_channel` for incoming `live_price` ticks over Redis.
-- **`submit_entry(position_type, limit_price)`**: Calls the `EntryStrategy.evaluate_manual_entry()` to see if an order is valid, then transitions the system to `pending_entry`.
-- **`handle_live_price(current_price)`**: The heartbeat of the active system. Triggers both `evaluate_pending_entry()` (to handle fills) and `evaluate_exit()` (to handle stops or targets).
-- **`evaluate_pending_entry(snapshot)`**: Queries `EntryStrategy` to see if the limit order criteria has been triggered by price action. If true, calls `open_position()`.
-- **`evaluate_exit(snapshot)`**: Queries `ExitStrategy` to see if a stop loss was hit or needs to be trailed. If so, calls the `ExecutionService` to update the state.
-- **`write_status()`**: Computes PnL/metrics via `PnLCalculator` and writes the `TradeState` out to Redis (`{ticker}_status`).
+- **`run()`** — subscribes to `execution_commands` and polls for incoming commands
+- **`handle_command(command)`** — routes commands (`pin_ticker`, `unpin_ticker`, `place_limit_order`, `cancel_order`, `close_position`, `modify_stop`) to the ticker's `Trade` object
+- **`get_trade(ticker)`** — lazily creates a `Trade` with injected `ManualEntryStrategy` + `FixedStopExitStrategy`
+- **`start_kline(ticker)`** / **`stop_kline(ticker)`** — manages `Kline` WebSocket lifecycle per ticker
 
-### 3. `ExecutionService` (`execute/services/execution.py`)
-A thin actuator that isolates the actual state updates of the `TradeState` from the evaluation logic.
-- **`open_position()`**: Flips the lifecycle state to `open` and locks in the `entry_price`.
-- **`close_position()`**: Changes state to `closed` and clears order information.
-- **`modify_stop()`**: Updates `stop_price` when strategies demand trailing stops.
+### `Trade` (`execute/services/trade.py`)
 
-### 4. `Strategy Interfaces` (`execute/strategy/base.py`)
-- **`EntryStrategy`**: Has `evaluate_manual_entry()` (checks if limit/manual condition is safe) and `evaluate_pending_entry()` (triggers open_position if price hits the limit).
-- **`ExitStrategy`**: Has `evaluate()` which continuously monitors an open position and returns an `ExitDecision` containing an action (e.g. `move_stop`, `exit_now`).
+Core orchestrator for a single ticker's runtime.
+
+- **`start()`** — begins the price listener thread and publishes initial status
+- **`listen_price_updates()`** — daemon thread subscribed to `{ticker}_event_channel`; routes ticks to `handle_live_price()`
+- **`submit_entry(position_type, limit_price, *, initiated_by, control_mode)`** — validates via `EntryStrategy.evaluate_manual_entry()`, transitions to `pending_entry`
+- **`handle_live_price(price)`** — heartbeat: triggers `evaluate_pending_entry()` + `evaluate_exit()` + `write_status()`
+- **`evaluate_pending_entry(snapshot)`** — delegates fill check to `EntryStrategy`; in automated mode calls `open_position()` on fill
+- **`evaluate_exit(snapshot)`** — delegates stop/target check to `ExitStrategy`; in automated mode calls `ExecutionService` to act
+- **`take_manual_control()`** / **`release_manual_control()`** — switch `control_mode`; all manual dashboard actions seize control automatically
+- **`write_status()`** — serializes current `TradeState` via `PnLCalculator.build_status()` into `{ticker}_status` hash
+
+### `TradeState` (`execute/models/trade_runtime.py`)
+
+Pydantic model holding all runtime state for one ticker.
+
+Key fields: `lifecycle_state`, `control_mode`, `initiated_by`, `manual_override_active`, `strategy_state`, `entry_decision`, `exit_decision`, `decision_reason`, `limit_price`, `entry_price`, `stop_price`, `target_price`, `pnl`, `zone`.
+
+`strategy_state` dict holds: `stop_mode`, and when in manual control, `entry_recommendation` / `exit_recommendation` dicts from the strategies.
+
+### `ExecutionService` (`execute/services/execution.py`)
+
+Thin actuator — isolates `TradeState` mutation from strategy and lifecycle logic.
+
+- **`open_position(state, entry_price, stop_price)`** — sets `lifecycle_state='open'`, locks in `entry_price`
+- **`close_position(state, reason)`** — sets `lifecycle_state='closed'`, clears limit
+- **`modify_stop(state, stop_price, reason)`** — updates `stop_price`
+
+### Strategy Interfaces (`execute/strategy/base.py`)
+
+- **`EntryStrategy`** — `evaluate_manual_entry(intent, state, snapshot)` + `evaluate_pending_entry(state, snapshot)` → `EntryDecision`
+- **`ExitStrategy`** — `evaluate(state, snapshot)` → `ExitDecision`
+
+**Implementations:**
+
+| Class | File | Logic |
+|---|---|---|
+| `ManualEntryStrategy` | `strategy/manual_entry.py` | Validates entry against `TradeState`; derives stop/target via `PnLCalculator`; checks if price has crossed the limit on pending fill |
+| `FixedStopExitStrategy` | `strategy/fixed_stop.py` | Returns `exit_now` when price crosses `stop_price`; `hold` otherwise |
+
+### `PnLCalculator` (`execute/services/pnl_calculator.py`)
+
+Pure math — no side effects.
+
+- **`derive_levels(...)`** — computes `stop_price` and `target_price` from entry price + risk/reward %
+- **`calculate_floating_pnl(...)`** — floating P&L in quote currency
+- **`build_status(state, last_update)`** — builds `PriceLevels` model for Redis serialization
+
+### `Kline` (`execute/services/kline.py`)
+
+- Connects to Binance `@kline_1m` WebSocket per ticker
+- Publishes `{"live_price": <float>}` to `{ticker}_event_channel` on every tick
+- **`stop()`** — publishes `shutdown_listener` sentinel and cancels the asyncio task for clean shutdown
