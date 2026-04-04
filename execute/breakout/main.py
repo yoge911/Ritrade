@@ -84,7 +84,6 @@ class ExecutionController:
         trade = self.get_trade(ticker)
         trade.pin()
         self.redis_client.sadd(PINNED_SET_KEY, ticker)
-        await self.start_kline(ticker)
 
     async def unpin_ticker(self, ticker: str) -> None:
         trade = self.trades.get(ticker)
@@ -99,7 +98,6 @@ class ExecutionController:
         trade.clear_status()
         self.trades.pop(ticker, None)
         self.redis_client.srem(PINNED_SET_KEY, ticker)
-        await self.stop_kline(ticker)
 
     async def handle_command(self, command: dict) -> None:
         ticker = str(command.get('ticker', '')).lower()
@@ -133,8 +131,6 @@ class ExecutionController:
                 control_mode='automated' if control_mode == 'automated' else 'manual',
             )
             print(f'[{ticker}] {message}')
-            if ok:
-                await self.start_kline(ticker)
         elif action == 'cancel_order':
             _, message = trade.cancel_order()
             print(f'[{ticker}] {message}')

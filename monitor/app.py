@@ -101,4 +101,4 @@ def main():
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-ui.run(title='Ritrade Monitor', dark=True, favicon='📊', port=8081)
+ui.run(title='Ritrade Monitor', dark=True, favicon='📊', port=8081, reload=False)

@@ -1,5 +1,6 @@
 import json
 
+from market_data.channels import execution_price_channel
 from execute.services.pnl_calculator import PnLCalculator
 from execute.services.trade import Trade
 from execute.strategy.fixed_stop import FixedStopExitStrategy
@@ -9,6 +10,7 @@ from execute.strategy.manual_entry import ManualEntryStrategy
 class FakeRedis:
     def __init__(self, *args, **kwargs) -> None:
         self.hashes: dict[str, dict[str, str]] = {}
+        self.published: list[tuple[str, str]] = []
 
     def hset(self, key: str, mapping: dict[str, str]) -> None:
         self.hashes[key] = dict(mapping)
@@ -16,8 +18,8 @@ class FakeRedis:
     def delete(self, key: str) -> None:
         self.hashes.pop(key, None)
 
-    def publish(self, *args, **kwargs) -> None:
-        return None
+    def publish(self, channel: str, payload: str) -> None:
+        self.published.append((channel, payload))
 
     def pubsub(self, *args, **kwargs):
         raise AssertionError('pubsub should not be used in unit tests')
@@ -173,3 +175,28 @@ def test_pnl_calculator_is_pure_math_helper():
     assert round(levels.stop_price, 5) == 99.0
     assert round(levels.target_price, 5) == 102.0
     assert pnl == 125.0
+
+
+def test_trade_accepts_trade_compatibility_live_price_payload(monkeypatch):
+    trade = build_trade(monkeypatch)
+    trade.submit_entry('long', 100.0, initiated_by='automated', control_mode='automated')
+
+    trade.handle_live_price(float({
+        'event_type': 'trade',
+        'event_time': 1710000020000,
+        'symbol': 'btcusdc',
+        'live_price': 99.5,
+    }['live_price']))
+
+    assert trade.state.lifecycle_state == 'open'
+    assert trade.state.live_price == 99.5
+
+
+def test_trade_shutdown_uses_execution_price_channel(monkeypatch):
+    trade = build_trade(monkeypatch)
+
+    trade.shutdown()
+
+    assert trade._redis_client.published == [
+        (execution_price_channel(trade.state.ticker), json.dumps({'event': 'shutdown_listener'}))
+    ]

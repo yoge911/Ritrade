@@ -38,7 +38,7 @@ graph TD
     D -->|poll| E[monitor/app.py\nNiceGUI port 8081]
     D -->|activity_snapshots| F[execute/trade/dashboard.py\nNiceGUI port 8080]
 
-    G[Binance WebSocket] -->|@kline_1m| H[execute/services/kline.py]
+    G[Binance WebSocket] -->|@trade stream| H[market_data/run_trade_ingestion.py]
     H -->|live_price pub| D
     D -->|live_price sub| I[execute/services/trade.py]
     I -->|ticker_status hset| D
@@ -196,7 +196,7 @@ Pure math — no Redis, no side effects.
 ### Kline Service: `Kline` (`execute/services/kline.py`)
 
 - Connects to Binance `@kline_1m` WebSocket per ticker
-- Publishes `{"live_price": ...}` to `{ticker}_event_channel` on every tick
+- Maintains optional candle buffering for future chart and macro consumers
 - `stop()` sends a `shutdown_listener` sentinel and cancels the asyncio task
 
 ### Execution Dashboard: `execute/trade/dashboard.py` (port 8080)

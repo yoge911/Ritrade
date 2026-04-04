@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Ritrade is an automated cryptocurrency trading system split into two codebases:
 
-- **`monitor/`** — passive observation layer: signal generation, Redis publishing, Streamlit dashboard
+- **`monitor/`** — passive observation layer: signal generation from normalized Redis events, Streamlit dashboard
+- **`market_data/`** — shared ingestion layer: Binance websocket retrieval, normalization, Redis publishing
 - **`execute/`** — active execution layer: strategy evaluation, trade lifecycle, NiceGUI dashboard
 
 Both codebases communicate via Redis. The monitor writes signals; the execute layer reads them and acts.
@@ -27,10 +28,13 @@ Redis must be running locally on port 6379 before starting any process.
 ### Monitor (run from `monitor/`)
 
 ```bash
+python -m market_data.run_trade_ingestion  # shared Binance @trade ingestion — writes normalized trade events to Redis
+python -m market_data.run_kline_ingestion  # shared Binance @kline ingestion scaffold — writes normalized kline events to Redis
+
 cd monitor
 
-python activity_monitor.py          # core signal engine — writes to Redis
-python app.py                  # NiceGUI monitor dashboard — reads from Redis (port 8081)
+python activity_monitor.py          # core signal engine — consumes normalized trade events and writes monitoring snapshots
+python app.py                       # NiceGUI monitor dashboard — reads from Redis (port 8081)
 
 python volume_spike.py         # optional: volume spike audio alerts for BTC/ETH/SOL/BNB
 python volatility.py           # optional: score top 20 pairs, write top 5 to volatile_tickers.txt
@@ -50,9 +54,10 @@ python -m execute.trade.dashboard    # NiceGUI dashboard — pinned ticker contr
 ### Codebase Separation
 
 ```
-monitor/activity_monitor.py  →  Redis ({ticker}_activity_snapshots)  →  execute/trade/dashboard.py (signals table)
-execute/breakout/main.py     →  Redis ({ticker}_status)              →  execute/trade/dashboard.py (pinned panels)
-execute/trade/dashboard.py   →  Redis (execution_commands)           →  execute/breakout/main.py (commands)
+market_data/run_trade_ingestion.py  →  Redis ({ticker}_trade_events)        →  monitor/activity_monitor.py
+monitor/activity_monitor.py         →  Redis ({ticker}_activity_snapshots)  →  execute/trade/dashboard.py (signals table)
+execute/breakout/main.py            →  Redis ({ticker}_status)              →  execute/trade/dashboard.py (pinned panels)
+execute/trade/dashboard.py          →  Redis (execution_commands)           →  execute/breakout/main.py (commands)
 ```
 
 ### Shared Utilities (`core_utils/`)
@@ -67,7 +72,7 @@ Lives at the repo root; used by both monitor and execute layers.
 
 #### Core Engine (`activity_monitor.py`)
 
-- Connects to Binance WebSocket (`@trade` stream)
+- Subscribes to normalized Redis trade-event channels (`{ticker}_trade_events`)
 - Maintains a rolling 10-second window of trades, trimming old entries on every tick
 - At exactly **20 seconds into each minute** (`event_time % 60000`), fires a trap snapshot
 - Authenticity check before firing: volume, trade count, and std_dev must all fall within calibrated thresholds
@@ -87,7 +92,9 @@ The thresholds in `activity_monitor.py` (and `candle.py`) are specific to **BTCU
 | `trap_logs` | `activity_monitor.py` | `app.py` tab 2 | 20s trap snapshots |
 | `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
 | `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1 | rolling 10s metrics |
-| `{ticker}_activity_snapshots` | `activity_monitor.py` (pending) | `execute/trade/dashboard.py` (signals table) | per-ticker activity snapshots |
+| `{ticker}_activity_snapshots` | `activity_monitor.py` | `execute/trade/dashboard.py` (signals table) | per-ticker activity snapshots |
+| `{ticker}_trade_events` | `market_data/run_trade_ingestion.py` | `activity_monitor.py` | normalized trade events |
+| `{ticker}_kline_events` | `market_data/run_kline_ingestion.py` | future consumers | normalized kline events |
 
 #### Monitor Dashboard (`app.py`)
 
@@ -123,7 +130,7 @@ execute/breakout/main.py  →  ExecutionController
   ├── subscribes to execution_commands     — pin/unpin tickers, place/cancel/close orders
   ├── restores execution_pinned_tickers    — persisted pinned set across restarts
   └── per pinned ticker:
-        ├── Kline (services/kline.py)      — WebSocket @kline_1m; publishes live_price to {ticker}_event_channel
+        ├── Kline (services/kline.py)      — optional candle stream for future chart / macro consumers
         └── Trade (services/trade.py)
               ├── state machine: idle → pending_entry → open → closed
               ├── evaluate_fill()          — auto-fills limit order when price crosses limit_price
@@ -175,7 +182,7 @@ Repo-root JSON file listing supported tickers with their calibrated thresholds. 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
 | `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` | full trade state: is_pinned, state, position, prices, P&L, quantity, risk/reward |
-| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub; also `shutdown_listener` sentinel |
+| `{ticker}_event_channel` | `market_data/run_trade_ingestion.py` (pub) | `services/trade.py` (sub) | trade-derived live price ticks via Pub/Sub; also `shutdown_listener` sentinel |
 | `execution_commands` | `trade/dashboard.py` (pub) | `breakout/main.py` (sub) | JSON commands: `pin_ticker`, `unpin_ticker`, `place_limit_order`, `cancel_order`, `close_position` |
 | `execution_pinned_tickers` | `breakout/main.py` (sadd/srem) | `breakout/main.py` (smembers on startup) | set of currently pinned tickers; persisted across restarts |
 | `breakout_logs` | `breakout/strategy.py` | — (not currently read by dashboard) | per-candle breakout signal log |

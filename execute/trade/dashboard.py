@@ -326,4 +326,4 @@ def main():
     ui.timer(1.0, refresh)
 
 
-ui.run(title='Ritrade', dark=True, favicon='📈', port=8080)
+ui.run(title='Ritrade', dark=True, favicon='📈', port=8080, reload=False)

@@ -2,7 +2,6 @@ from typing import Callable, Optional
 import asyncio
 import json
 import websockets
-import redis
 
 
 # Example WebSocket message from Binance kline stream:
@@ -37,9 +36,6 @@ class Kline:
     """
     Connects to the Binance WebSocket kline stream for a given symbol/interval.
 
-    On every tick:
-      - Publishes live price to Redis Pub/Sub ({symbol}_event_channel)
-
     On closed candle (kline['x'] == True):
       - Appends OHLC data to the internal candle buffer
       - Calls on_candle(buffer) if a callback is provided
@@ -58,7 +54,6 @@ class Kline:
         self.on_candle = on_candle
 
         self._candle_buffer: list = []
-        self._redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
         self._stop_event = asyncio.Event()
 
     def stop(self) -> None:
@@ -78,18 +73,6 @@ class Kline:
 
                         json_data = json.loads(data)
                         kline = json_data['k']
-
-                        # Publish live price on every tick so Trade can track floating P&L
-                        active_data = {
-                            'event_time': json_data['E'],
-                            'symbol':     json_data['s'],
-                            'live_price': float(kline['c']),
-                            'interval':   kline['i'],
-                        }
-                        self._redis_client.publish(
-                            f"{self.symbol}_event_channel",
-                            json.dumps(active_data)
-                        )
 
                         # Only process completed candles (x = is closed)
                         if kline['x']:

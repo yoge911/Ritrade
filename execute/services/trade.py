@@ -9,6 +9,7 @@ from execute.services.execution import ExecutionService
 from execute.services.pnl_calculator import PnLCalculator
 from execute.strategy.base import EntryStrategy, ExitStrategy
 from core_utils.format import format_timestamp
+from market_data.channels import execution_price_channel
 
 
 class Trade:
@@ -54,10 +55,10 @@ class Trade:
         self.write_status()
 
     def listen_price_updates(self) -> None:
-        """Consume Redis price events and route live prices into the runtime."""
+        """Consume trade-driven Redis live-price events and route them into the runtime."""
         pubsub = self._redis_client.pubsub()
-        pubsub.subscribe(f"{self.state.ticker}_event_channel")
-        print(f"[{self.state.ticker}] Listening for price updates on Redis channel.")
+        pubsub.subscribe(execution_price_channel(self.state.ticker))
+        print(f"[{self.state.ticker}] Listening for trade-driven price updates on Redis channel.")
 
         for message in pubsub.listen():
             if not self._running.is_set():
@@ -75,11 +76,19 @@ class Trade:
             if data.get('event') == 'shutdown_listener':
                 break
 
-            elif 'live_price' in data:
-                self.handle_live_price(float(data['live_price']))
-
-            else:
+            if 'live_price' not in data:
                 print(f"[{self.state.ticker}] Ignored unrecognized message: {data}")
+                continue
+
+            event_type = data.get('event_type')
+            if event_type not in (None, 'trade'):
+                print(f"[{self.state.ticker}] Ignored non-trade live-price message: {data}")
+                continue
+
+            try:
+                self.handle_live_price(float(data['live_price']))
+            except (TypeError, ValueError):
+                print(f"[{self.state.ticker}] Invalid live_price payload: {data}")
 
         pubsub.close()
 
@@ -92,7 +101,7 @@ class Trade:
         """Stop the listener thread and unblock Redis pubsub shutdown cleanly."""
         self._running.clear()
         self._redis_client.publish(
-            f"{self.state.ticker}_event_channel",
+            execution_price_channel(self.state.ticker),
             json.dumps({"event": "shutdown_listener"})
         )
         if self._monitor_thread and self._monitor_thread.is_alive():

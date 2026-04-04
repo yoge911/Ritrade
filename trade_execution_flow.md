@@ -7,7 +7,7 @@ End-to-end execution flow of the `Ritrade` trading system, centered around `Exec
 1. **Commands:** The dashboard publishes JSON commands to `execution_commands`. `ExecutionController` consumes them and routes to the relevant `Trade` instance.
 2. **Strategy evaluation:** Entry and exit logic is delegated to `EntryStrategy` / `ExitStrategy` implementations. The `Trade` class never contains strategy logic directly.
 3. **Control mode:** If `control_mode='manual'`, strategy decisions are stored as recommendations but not acted on — the human confirms via the dashboard. If `'automated'`, decisions execute immediately.
-4. **Price monitoring:** Each `Trade` runs a background thread (`listen_price_updates`) subscribed to `{ticker}_event_channel`. Every price tick triggers entry fill checks and exit evaluation.
+4. **Price monitoring:** Each `Trade` runs a background thread (`listen_price_updates`) subscribed to `{ticker}_event_channel`. Trade-derived price ticks trigger entry fill checks and exit evaluation.
 5. **State actuation:** `ExecutionService` applies state changes to `TradeState`. `PnLCalculator.build_status()` serializes the result to the `{ticker}_status` Redis hash for the dashboard to read.
 
 ---
@@ -40,8 +40,7 @@ sequenceDiagram
         T->>T: state.lifecycle_state = 'pending_entry'
         T->>T: state.limit_price, stop_price set
         T->>Redis: write_status() → {ticker}_status
-        EC->>EK: start_kline(ticker)
-        EK-->>Redis: Publish 'live_price' → {ticker}_event_channel
+        TI-->>Redis: Publish trade-derived 'live_price' → {ticker}_event_channel
     end
 
     %% 3. Price loop
@@ -149,5 +148,5 @@ Pure math — no side effects.
 ### `Kline` (`execute/services/kline.py`)
 
 - Connects to Binance `@kline_1m` WebSocket per ticker
-- Publishes `{"live_price": <float>}` to `{ticker}_event_channel` on every tick
-- **`stop()`** — publishes `shutdown_listener` sentinel and cancels the asyncio task for clean shutdown
+- Maintains candle buffering for optional future chart or macro consumers
+- **`stop()`** — cancels the asyncio task for clean shutdown

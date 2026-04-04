@@ -2,7 +2,8 @@
 
 An automated cryptocurrency trading system built around a **volatility trap strategy** on 1-minute candles. Split into two independent layers that communicate via Redis.
 
-- **`monitor/`** — passive observation: signal generation, Redis publishing, NiceGUI dashboard
+- **`monitor/`** — passive observation: signal generation from normalized Redis market data, NiceGUI dashboard
+- **`market_data/`** — shared ingestion layer: Binance websocket retrieval, normalization, Redis publishing
 - **`execute/`** — active execution: strategy evaluation, trade lifecycle, NiceGUI dashboard
 
 ---
@@ -53,9 +54,10 @@ A 0–1 score computed as the average of three normalized values (volume, std_de
 ### Data Flow
 
 ```
-monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
-                                       →  monitor/app.py          (NiceGUI, read-only, port 8081)
-                                       →  execute/trade/dashboard.py  (NiceGUI, interactive, port 8080)
+market_data/run_trade_ingestion.py  →  Redis ({ticker}_trade_events)  →  monitor/activity_monitor.py
+market_data/run_kline_ingestion.py  →  Redis ({ticker}_kline_events)  →  future shared consumers
+                                                                    └→  {ticker}_event_channel compatibility for execute
+monitor/activity_monitor.py         →  Redis snapshot keys           →  monitor/app.py / execute dashboards
 ```
 
 ### Redis Keys
@@ -65,9 +67,11 @@ monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
 | `rolling_metrics_logs` | `activity_monitor.py` | `monitor/app.py` tab 1 | Rolling 10s window metrics |
 | `trap_logs` | `activity_monitor.py` | `monitor/app.py` tab 2 | 20s trap snapshots |
 | `minute_logs` | `activity_monitor.py` | `monitor/app.py` tab 3 | Per-minute summaries |
-| `{ticker}_activity_snapshots` | `activity_monitor.py` (pending) | `trade/dashboard.py` signals table | Per-ticker activity scores |
+| `{ticker}_activity_snapshots` | `activity_monitor.py` | `trade/dashboard.py` signals table | Per-ticker activity scores |
+| `{ticker}_trade_events` | `market_data/run_trade_ingestion.py` | `monitor/activity_monitor.py` | Normalized trade event stream |
+| `{ticker}_kline_events` | `market_data/run_kline_ingestion.py` | future consumers | Normalized kline event stream |
 | `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` pinned panels | Full trade state: price, P&L, SL, TP, decisions |
-| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | Live price ticks via Pub/Sub |
+| `{ticker}_event_channel` | `market_data/run_trade_ingestion.py` | `services/trade.py` (sub) | Trade-derived live price ticks via Pub/Sub |
 | `execution_commands` | `trade/dashboard.py` (pub) | `breakout/main.py` (sub) | JSON commands: pin, order, cancel, close |
 | `execution_pinned_tickers` | `breakout/main.py` (sadd/srem) | `breakout/main.py` (smembers) | Set of pinned tickers, persisted across restarts |
 
@@ -79,7 +83,7 @@ execute/breakout/main.py  →  ExecutionController
   ├── subscribes to execution_commands     — pin/unpin, place/cancel/close orders
   ├── restores execution_pinned_tickers    — persisted pinned set across restarts
   └── per pinned ticker:
-        ├── Kline (services/kline.py)      — WebSocket @kline_1m; publishes live_price to Redis
+        ├── Kline (services/kline.py)      — optional candle stream for future chart / macro consumers
         └── Trade (services/trade.py)
               ├── state machine: idle → pending_entry → open → closed
               ├── ManualEntryStrategy      — validates entry, derives stop/target
@@ -140,8 +144,17 @@ Ritrade/
 │   ├── logger/log.py               # Timestamped logger
 │   └── tones/                      # Audio files for macOS afplay alerts
 │
+├── market_data/                    # Shared market-data ingestion layer
+│   ├── models.py                   # TradeEvent + KlineEvent normalized models
+│   ├── channels.py                 # Redis channel/key naming helpers
+│   ├── storage.py                  # Optional persistence hook interface
+│   ├── sources/binance.py          # Binance trade/kline websocket sources
+│   ├── publishers/redis.py         # RedisMarketDataPublisher
+│   ├── run_trade_ingestion.py      # Trade ingestion entry point
+│   └── run_kline_ingestion.py      # Kline ingestion entry point
+│
 ├── monitor/                        # Passive observation layer
-│   ├── activity_monitor.py         # Core signal engine — rolling 10s window, trap at 20s
+│   ├── activity_monitor.py         # Core signal engine — consumes normalized trade events from Redis
 │   ├── candle.py                   # Older bucket-based engine (kept for reference)
 │   ├── app.py                      # NiceGUI monitor dashboard (3 tabs, port 8081)
 │   ├── signal_score.py             # Standalone 0–100 signal scorer (not yet integrated)
@@ -237,10 +250,11 @@ Stops any existing processes first, then starts all four components in the backg
 
 ```
 ✅  Redis OK
-▶  monitor/activity_monitor.py      (pid 12345)
-▶  monitor/app.py                   (pid 12346)
-▶  execute.breakout.main            (pid 12347)
-▶  execute.trade.dashboard          (pid 12348)
+▶  market_data.run_trade_ingestion  (pid 12345)
+▶  monitor/activity_monitor.py      (pid 12346)
+▶  monitor/app.py                   (pid 12347)
+▶  execute.breakout.main            (pid 12348)
+▶  execute.trade.dashboard          (pid 12349)
 
 Logs → .run/   |   Stop with: make stop
 ```
@@ -260,6 +274,13 @@ tail -f .run/main.log               # execute engine
 tail -f .run/dashboard.log          # execute NiceGUI dashboard
 
 tail -f .run/*.log                  # all at once
+```
+
+### Run the ingestion services directly
+
+```bash
+python -m market_data.run_trade_ingestion
+python -m market_data.run_kline_ingestion
 ```
 
 ### Individual components (foreground, useful for debugging)

@@ -1,17 +1,29 @@
 import asyncio
-import websockets
 import json
+import os
+import sys
+from datetime import datetime
+
 import numpy as np
 import redis
-import os
-from datetime import datetime
 from pydantic import BaseModel
 
-# Redis connection
-redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-# Type alias: (timestamp_ms, price, quantity)
-TradeEntry = tuple[int, float, float]
+from market_data.channels import (
+    GLOBAL_MINUTE_LOGS_KEY,
+    GLOBAL_ROLLING_METRICS_LOGS_KEY,
+    GLOBAL_TRAP_LOGS_KEY,
+    activity_snapshots_key,
+    minute_logs_key,
+    rolling_metrics_key,
+    trade_events_channel,
+)
+from market_data.models import TradeEvent
+
+MAX_LOG_ENTRIES = 60
 
 
 class TickerConfig(BaseModel):
@@ -25,6 +37,7 @@ class TickerConfig(BaseModel):
 
 
 class ActivitySnapshot(BaseModel):
+    ticker: str
     timestamp: str
     is_qualified_activity: bool
     activity_score: float
@@ -37,6 +50,7 @@ class ActivitySnapshot(BaseModel):
 
 
 class MinuteSummary(BaseModel):
+    ticker: str
     timestamp: str
     trades: int
     volume: float
@@ -46,121 +60,162 @@ class MinuteSummary(BaseModel):
 class TickerState:
     def __init__(self, config: TickerConfig):
         self.config = config
-        self.rolling_window_trades: list[TradeEntry] = []
+        self.rolling_window_trades: list[TradeEvent] = []
         self.activity_snapshots: list[ActivitySnapshot] = []
         self.minute_logs: list[MinuteSummary] = []
         self.rolling_metrics_logs: list[ActivitySnapshot] = []
+        self.current_minute: datetime | None = None
+        self.already_triggered_20s = False
+
+    def process_trade_event(self, event: TradeEvent) -> tuple[ActivitySnapshot, ActivitySnapshot | None, MinuteSummary | None]:
+        trade_minute = datetime.fromtimestamp(event.event_time / 1000).replace(second=0, microsecond=0)
+        minute_summary: MinuteSummary | None = None
+
+        if self.current_minute is None:
+            self.current_minute = trade_minute
+            self.already_triggered_20s = False
+
+        if trade_minute != self.current_minute:
+            minute_summary = generate_minute_data(self.current_minute, self.rolling_window_trades, self.config.ticker)
+            append_capped(self.minute_logs, minute_summary)
+            self.current_minute = trade_minute
+            self.already_triggered_20s = False
+
+        self.rolling_window_trades.append(event)
+        cutoff_time = event.event_time - 10000
+        self.rolling_window_trades[:] = [trade for trade in self.rolling_window_trades if trade.event_time >= cutoff_time]
+
+        rolling_snapshot = generate_activity_snapshot(event.event_time, self.rolling_window_trades, self.config)
+        append_capped(self.rolling_metrics_logs, rolling_snapshot)
+
+        trap_snapshot: ActivitySnapshot | None = None
+        if not self.already_triggered_20s and 20000 <= (event.event_time % 60000) <= 21000:
+            trap_snapshot = generate_activity_snapshot(event.event_time, self.rolling_window_trades, self.config)
+            append_capped(self.activity_snapshots, trap_snapshot)
+            self.already_triggered_20s = True
+
+        return rolling_snapshot, trap_snapshot, minute_summary
+
+
+class ActivityMonitor:
+    def __init__(self, configs: list[TickerConfig], redis_client: redis.Redis | None = None) -> None:
+        self.redis_client = redis_client or redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        self.states = {config.ticker.lower(): TickerState(config) for config in configs}
+        self.global_trap_logs: list[dict] = []
+        self.global_minute_logs: list[dict] = []
+        self.global_rolling_metrics_logs: list[dict] = []
 
     def initialize_redis(self) -> None:
-        t = self.config.ticker.lower()
-        redis_client.delete(f"{t}_activity_snapshots", f"{t}_minute_logs", f"{t}_rolling_metrics_logs")
-        print(f"✅ Redis initialized for {self.config.ticker}.")
+        self.redis_client.delete(
+            GLOBAL_TRAP_LOGS_KEY,
+            GLOBAL_MINUTE_LOGS_KEY,
+            GLOBAL_ROLLING_METRICS_LOGS_KEY,
+        )
+        for ticker in self.states:
+            self.redis_client.delete(
+                activity_snapshots_key(ticker),
+                minute_logs_key(ticker),
+                rolling_metrics_key(ticker),
+            )
+        print(f'✅ Redis initialized for {len(self.states)} monitor tickers.')
 
-    def save_to_redis(self) -> None:
-        t = self.config.ticker.lower()
-        # Cap lists to prevent memory leaks in redis (e.g. keeping latest 60)
-        redis_client.set(f"{t}_activity_snapshots", json.dumps([d.model_dump() for d in self.activity_snapshots[-60:]]))
-        redis_client.set(f"{t}_minute_logs", json.dumps([d.model_dump() for d in self.minute_logs[-60:]]))
-        redis_client.set(f"{t}_rolling_metrics_logs", json.dumps([d.model_dump() for d in self.rolling_metrics_logs[-60:]]))
+    def handle_trade_event(self, event: TradeEvent) -> None:
+        state = self.states.get(event.symbol.lower())
+        if not state:
+            return
+
+        rolling_snapshot, trap_snapshot, minute_summary = state.process_trade_event(event)
+        append_capped(self.global_rolling_metrics_logs, rolling_snapshot.model_dump())
+        if trap_snapshot:
+            append_capped(self.global_trap_logs, trap_snapshot.model_dump())
+            print(f"\n📊 [{event.symbol.upper()}] Activity Snapshot Triggered @ {trap_snapshot.timestamp}")
+        if minute_summary:
+            append_capped(self.global_minute_logs, minute_summary.model_dump())
+        self.save_state_to_redis(event.symbol.lower(), state)
+
+    def save_state_to_redis(self, ticker: str, state: TickerState) -> None:
+        self.redis_client.set(
+            activity_snapshots_key(ticker),
+            json.dumps([entry.model_dump() for entry in state.activity_snapshots[-MAX_LOG_ENTRIES:]]),
+        )
+        self.redis_client.set(
+            minute_logs_key(ticker),
+            json.dumps([entry.model_dump() for entry in state.minute_logs[-MAX_LOG_ENTRIES:]]),
+        )
+        self.redis_client.set(
+            rolling_metrics_key(ticker),
+            json.dumps([entry.model_dump() for entry in state.rolling_metrics_logs[-MAX_LOG_ENTRIES:]]),
+        )
+        self.redis_client.set(GLOBAL_TRAP_LOGS_KEY, json.dumps(self.global_trap_logs[-MAX_LOG_ENTRIES:]))
+        self.redis_client.set(GLOBAL_MINUTE_LOGS_KEY, json.dumps(self.global_minute_logs[-MAX_LOG_ENTRIES:]))
+        self.redis_client.set(
+            GLOBAL_ROLLING_METRICS_LOGS_KEY,
+            json.dumps(self.global_rolling_metrics_logs[-MAX_LOG_ENTRIES:]),
+        )
+
+    async def consume_trade_events(self, ticker: str) -> None:
+        pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(trade_events_channel(ticker))
+        print(f'📡 Listening for normalized trade events on {trade_events_channel(ticker)}...')
+
+        try:
+            while True:
+                message = pubsub.get_message(timeout=1.0)
+                if message and message.get('type') == 'message':
+                    try:
+                        event = TradeEvent.model_validate_json(message['data'])
+                    except ValueError:
+                        print(f'⚠️ Invalid trade event payload for {ticker}: {message["data"]}')
+                    else:
+                        self.handle_trade_event(event)
+                await asyncio.sleep(0.05)
+        finally:
+            pubsub.close()
+
+
+def append_capped(items: list, item, limit: int = MAX_LOG_ENTRIES) -> None:
+    items.append(item)
+    if len(items) > limit:
+        items.pop(0)
 
 
 def load_configs() -> list[TickerConfig]:
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tickers_config.json')
+    config_path = os.path.join(ROOT_DIR, 'tickers_config.json')
     if not os.path.exists(config_path):
-        print(f"⚠️  Config file not found at {config_path}")
+        print(f'⚠️  Config file not found at {config_path}')
         return []
-    with open(config_path, 'r') as f:
-        data = json.load(f)
+    with open(config_path, 'r') as config_file:
+        data = json.load(config_file)
     return [TickerConfig(**item) for item in data]
 
 
 def format_timestamp(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime('%H:%M:%S')
 
+
 def format_minute(dt: datetime) -> str:
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
+
 def calculate_wap(prices: list[float], quantities: list[float]) -> float:
     total_qty = sum(quantities)
-    return sum(p * q for p, q in zip(prices, quantities)) / total_qty if total_qty else 0
+    return sum(price * quantity for price, quantity in zip(prices, quantities)) / total_qty if total_qty else 0
+
 
 def normalize_value(current_value: float, percentile_20: float, percentile_80: float) -> float:
     if current_value <= percentile_20:
         return 0.0
-    elif current_value >= percentile_80:
+    if current_value >= percentile_80:
         return 1.0
-    else:
-        return (current_value - percentile_20) / (percentile_80 - percentile_20)
+    return (current_value - percentile_20) / (percentile_80 - percentile_20)
 
 
-async def analyze_trade_activity(state: TickerState) -> None:
-    ticker = state.config.ticker
-    trade_url = f"wss://stream.binance.com:9443/ws/{ticker.lower()}@trade"
-    current_minute: datetime | None = None
-    already_triggered_20s: bool = False
-
-    async with websockets.connect(trade_url) as trade_ws:
-        print(f"📡 Running rolling window stream for {ticker.upper()}...")
-
-        while True:
-            try:
-                data = json.loads(await trade_ws.recv())
-
-                price: float = float(data["p"])
-                quantity: float = float(data["q"])
-                is_buyer_maker: bool = data["m"]
-                event_time: int = data["T"]
-
-                trade_minute: datetime = datetime.fromtimestamp(event_time / 1000).replace(second=0, microsecond=0)
-
-                # Reset per minute
-                if current_minute is None:
-                    current_minute = trade_minute
-                    already_triggered_20s = False
-
-                if trade_minute != current_minute:
-                    minute_data: MinuteSummary = generate_minute_data(current_minute, state.rolling_window_trades)
-                    state.minute_logs.append(minute_data)
-                    # Keep local memory bound
-                    if len(state.minute_logs) > 60: state.minute_logs.pop(0)
-                        
-                    current_minute = trade_minute
-                    already_triggered_20s = False
-
-                # ----------------
-                # Rolling window logic
-                # ----------------
-                # Update rolling window
-                state.rolling_window_trades.append((event_time, price, quantity))
-                cutoff_time: int = event_time - 10000
-                state.rolling_window_trades[:] = [t for t in state.rolling_window_trades if t[0] >= cutoff_time]
-
-                # Generate metrics for rolling window on every trade
-                rolling_data: ActivitySnapshot = generate_activity_snapshot(event_time, state.rolling_window_trades, state.config)
-                state.rolling_metrics_logs.append(rolling_data)
-                if len(state.rolling_metrics_logs) > 60: state.rolling_metrics_logs.pop(0)
-
-                # Trigger activity snapshot at 20s mark
-                if not already_triggered_20s and 20000 <= (event_time % 60000) <= 21000:
-                    activity_snapshot: ActivitySnapshot = generate_activity_snapshot(event_time, state.rolling_window_trades, state.config)
-                    state.activity_snapshots.append(activity_snapshot)
-                    if len(state.activity_snapshots) > 60: state.activity_snapshots.pop(0)
-                        
-                    print(f"\n📊 [{ticker.upper()}] Activity Snapshot Triggered @ {activity_snapshot.timestamp}")
-                    already_triggered_20s = True
-
-                state.save_to_redis()
-
-            except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK) as e:
-                print(f"⚠️ WebSocket disconnected for {ticker}: {e}")
-                await asyncio.sleep(2)
-
-
-def generate_minute_data(current_minute: datetime, trades_window: list[TradeEntry]) -> MinuteSummary:
-    prices: list[float] = [t[1] for t in trades_window]
-    quantities: list[float] = [t[2] for t in trades_window]
-    total_volume: float = sum(quantities)
+def generate_minute_data(current_minute: datetime, trades_window: list[TradeEvent], ticker: str) -> MinuteSummary:
+    prices = [trade.price for trade in trades_window]
+    quantities = [trade.quantity for trade in trades_window]
+    total_volume = sum(quantities)
     return MinuteSummary(
+        ticker=ticker.lower(),
         timestamp=format_minute(current_minute),
         trades=len(trades_window),
         volume=round(total_volume, 3),
@@ -168,29 +223,29 @@ def generate_minute_data(current_minute: datetime, trades_window: list[TradeEntr
     )
 
 
-def generate_activity_snapshot(event_time: int, trades_window: list[TradeEntry], config: TickerConfig) -> ActivitySnapshot:
-    prices: list[float] = [t[1] for t in trades_window]
-    quantities: list[float] = [t[2] for t in trades_window]
-    total_volume: float = sum(quantities)
-    avg_price: float = np.mean(prices) if prices else 0
-    std_dev: float = np.std(prices) if prices else 0
-    slope: float = prices[-1] - prices[0] if len(prices) > 1 else 0
-    wap: float = calculate_wap(prices, quantities)
-    trade_count: int = len(trades_window)
+def generate_activity_snapshot(event_time: int, trades_window: list[TradeEvent], config: TickerConfig) -> ActivitySnapshot:
+    prices = [trade.price for trade in trades_window]
+    quantities = [trade.quantity for trade in trades_window]
+    total_volume = sum(quantities)
+    avg_price = np.mean(prices) if prices else 0
+    std_dev = np.std(prices) if prices else 0
+    slope = prices[-1] - prices[0] if len(prices) > 1 else 0
+    wap = calculate_wap(prices, quantities)
+    trade_count = len(trades_window)
 
-    # Activity Quality check
-    is_qualified_activity: bool = False
-    activity_score: float = 0.0
+    is_qualified_activity = False
+    activity_score = 0.0
 
     if config.min_volume_threshold < total_volume < config.max_volume_threshold:
         if trade_count > config.min_trade_count and config.min_std_dev < std_dev < config.max_std_dev:
             is_qualified_activity = True
-            normalized_volume: float = normalize_value(total_volume, config.min_volume_threshold, config.max_volume_threshold)
-            normalized_std_dev: float = normalize_value(std_dev, config.min_std_dev, config.max_std_dev)
-            normalized_trade_count: float = normalize_value(trade_count, config.min_trade_count, config.max_trade_count)
+            normalized_volume = normalize_value(total_volume, config.min_volume_threshold, config.max_volume_threshold)
+            normalized_std_dev = normalize_value(std_dev, config.min_std_dev, config.max_std_dev)
+            normalized_trade_count = normalize_value(trade_count, config.min_trade_count, config.max_trade_count)
             activity_score = (normalized_volume + normalized_std_dev + normalized_trade_count) / 3
 
     return ActivitySnapshot(
+        ticker=config.ticker.lower(),
         timestamp=format_timestamp(event_time),
         is_qualified_activity=is_qualified_activity,
         activity_score=round(activity_score, 5),
@@ -203,22 +258,18 @@ def generate_activity_snapshot(event_time: int, trades_window: list[TradeEntry],
     )
 
 
-async def main():
+async def main() -> None:
     configs = load_configs()
     if not configs:
-        print("❌ No tickers configured. Please ensure tickers_config.json is populated.")
+        print('❌ No tickers configured. Please ensure tickers_config.json is populated.')
         return
 
-    states = []
-    for cfg in configs:
-        state = TickerState(cfg)
-        state.initialize_redis()
-        states.append(state)
-
-    # Run streams concurrently
-    tasks = [analyze_trade_activity(state) for state in states]
-    print(f"🚀 Starting monitors for {len(tasks)} tickers concurrently...")
+    monitor = ActivityMonitor(configs)
+    monitor.initialize_redis()
+    tasks = [monitor.consume_trade_events(config.ticker.lower()) for config in configs]
+    print(f'🚀 Starting monitor consumers for {len(tasks)} tickers...')
     await asyncio.gather(*tasks)
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     asyncio.run(main())
