@@ -39,8 +39,8 @@ python volatility.py           # optional: score top 20 pairs, write top 5 to vo
 ### Execute (run from **repo root**)
 
 ```bash
-python -m execute.breakout.main      # execution engine — Kline feed + strategy + trade monitor
-python -m execute.trade.dashboard    # NiceGUI dashboard — live trade status and breakout logs
+python -m execute.breakout.main      # execution controller — multi-ticker Kline feeds + trade lifecycle
+python -m execute.trade.dashboard    # NiceGUI dashboard — pinned ticker controls + signal table
 ```
 
 > Execute scripts use package-style imports (`execute.breakout.*`, `execute.trade.*`, `core_utils.*`) and must be run as modules from the repo root (`python -m`). Monitor scripts must be run from within `monitor/`.
@@ -50,9 +50,9 @@ python -m execute.trade.dashboard    # NiceGUI dashboard — live trade status a
 ### Codebase Separation
 
 ```
-monitor/activity_monitor.py  →  Redis  →  execute/breakout/main.py
-                                  →  monitor/app.py (Streamlit, read-only)
-                                  →  execute/trade/dashboard.py (NiceGUI, interactive)
+monitor/activity_monitor.py  →  Redis ({ticker}_activity_snapshots)  →  execute/trade/dashboard.py (signals table)
+execute/breakout/main.py     →  Redis ({ticker}_status)              →  execute/trade/dashboard.py (pinned panels)
+execute/trade/dashboard.py   →  Redis (execution_commands)           →  execute/breakout/main.py (commands)
 ```
 
 ### Shared Utilities (`core_utils/`)
@@ -84,9 +84,10 @@ The thresholds in `activity_monitor.py` (and `candle.py`) are specific to **BTCU
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `trap_logs` | `activity_monitor.py` | `app.py` tab 2, `execute/trade/dashboard.py` (signal cards + Trap Signals tab) | 20s trap snapshots |
+| `trap_logs` | `activity_monitor.py` | `app.py` tab 2 | 20s trap snapshots |
 | `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
-| `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1, `execute/trade/dashboard.py` (Rolling Metrics tab) | rolling 10s metrics |
+| `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1 | rolling 10s metrics |
+| `{ticker}_activity_snapshots` | `activity_monitor.py` (pending) | `execute/trade/dashboard.py` (signals table) | per-ticker activity snapshots |
 
 #### Monitor Dashboard (`app.py`)
 
@@ -117,13 +118,18 @@ Additional Streamlit pages (`pages/`) are kept for reference but are no longer p
 #### Execution Flow
 
 ```
-execute/breakout/main.py
-  ├── Kline (services/kline.py)        — WebSocket @kline_1m feed; publishes live_price to Redis Pub/Sub
-  ├── strategy.py (breakout/)          — volatility_breakout logic on closed candles → writes breakout_logs to Redis
-  └── Trade (services/trade.py)
-        ├── PnLCalculator              — stop/target math and floating P&L per tick
-        │   (services/pnl_calculator.py)
-        └── subscribes to Redis Pub/Sub ({ticker}_event_channel) for live price updates from Kline
+execute/breakout/main.py  →  ExecutionController
+  ├── loads tickers_config.json            — list of supported tickers
+  ├── subscribes to execution_commands     — pin/unpin tickers, place/cancel/close orders
+  ├── restores execution_pinned_tickers    — persisted pinned set across restarts
+  └── per pinned ticker:
+        ├── Kline (services/kline.py)      — WebSocket @kline_1m; publishes live_price to {ticker}_event_channel
+        └── Trade (services/trade.py)
+              ├── state machine: idle → pending_entry → open → closed
+              ├── evaluate_fill()          — auto-fills limit order when price crosses limit_price
+              ├── PnLCalculator            — stop/target math and floating P&L per tick
+              │   (services/pnl_calculator.py)
+              └── subscribes to {ticker}_event_channel for live price updates
 ```
 
 #### Package Layout (`execute/`)
@@ -134,51 +140,71 @@ execute/
     trade_config.py     TradeConfig
     candle.py           Candle
     breakout_log.py     BreakoutLog
-    price_status.py     PriceStatus
+    price_status.py     PriceLevels  (ticker, is_pinned, state, position, prices, pnl, quantity, risk/reward)
 
   services/             — behaviour / orchestration (plain Python classes)
-    kline.py            Kline        (WebSocket + Redis pub)
-    pnl_calculator.py   PnLCalculator  (stop/target/P&L math)
-    trade.py            Trade        (thread + Redis sub + lifecycle)
+    kline.py            Kline          (WebSocket + Redis pub; stop() for graceful shutdown)
+    pnl_calculator.py   PnLCalculator  (stop/target/P&L math; returns PriceLevels)
+    trade.py            Trade          (thread + Redis sub + state machine + limit order lifecycle)
 
   breakout/
-    main.py             entry point
-    strategy.py         volatility_breakout function
+    main.py             ExecutionController entry point
+    strategy.py         volatility_breakout function (not currently wired into main.py)
 
   trade/
     dashboard.py        NiceGUI dashboard
+    dashboard.css       styles
 
   smc/
     smc.py / smcplot.py  research prototypes
+```
+
+#### Ticker Configuration (`tickers_config.json`)
+
+Repo-root JSON file listing supported tickers with their calibrated thresholds. `ExecutionController` and the dashboard both load from this file to determine valid tickers.
+
+```json
+[
+  { "ticker": "BTCUSDC", "min_volume_threshold": ..., "max_volume_threshold": ..., ... },
+  { "ticker": "SOLUSDC", ... }
+]
 ```
 
 #### Redis Keys (written by execute)
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `breakout_logs` | `breakout/strategy.py` | `trade/dashboard.py` | per-candle breakout signal log |
-| `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` | live trade status: price, P&L, SL, TP |
-| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub |
+| `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` | full trade state: is_pinned, state, position, prices, P&L, quantity, risk/reward |
+| `{ticker}_event_channel` | `services/kline.py` (pub) | `services/trade.py` (sub) | live price ticks via Pub/Sub; also `shutdown_listener` sentinel |
+| `execution_commands` | `trade/dashboard.py` (pub) | `breakout/main.py` (sub) | JSON commands: `pin_ticker`, `unpin_ticker`, `place_limit_order`, `cancel_order`, `close_position` |
+| `execution_pinned_tickers` | `breakout/main.py` (sadd/srem) | `breakout/main.py` (smembers on startup) | set of currently pinned tickers; persisted across restarts |
+| `breakout_logs` | `breakout/strategy.py` | — (not currently read by dashboard) | per-candle breakout signal log |
 
 #### NiceGUI Dashboard (`execute/trade/dashboard.py`)
 
-Unified execution UI combining trade status with monitor signal context. Runs standalone (`python -m execute.trade.dashboard`).
+Execution control surface. Runs standalone (`python -m execute.trade.dashboard`). Refreshes every 1 second via `ui.timer`.
 
-- **Trade status cards** — Price, P&L, Zone, Entry, Stop, Target (from `{ticker}_status`)
-- **Signal cards** — Dynamic Factor, Authentic Volume, Trades, Slope (from latest `trap_logs` entry)
-- **Trap Signals tab** — full trap snapshot history (reads `trap_logs` from monitor layer)
-- **Breakout Log tab** — per-candle breakout flags (reads `breakout_logs` from execute layer)
-- **Rolling Metrics tab** — high-frequency 10s window data (reads `rolling_metrics_logs` from monitor layer)
-- Buy/Sell buttons
+Two sections:
+
+**Pinned Tickers** — one panel per pinned ticker (from `execution_pinned_tickers`):
+- Stat cards: Live Price, Floating P&L, Zone, Entry, Stop, Target (from `{ticker}_status`)
+- Buttons: Buy (long limit at current price), Sell (short limit), Cancel (pending order), Close (open position), Unpin
+- Commands are sent as JSON to `execution_commands` channel
+
+**Signals** — one row per ticker in `tickers_config.json`, sorted by `activity_score` descending:
+- Shows: Trades, Vol, WAP, Std Dev, Slope, activity score, qualified status (from `{ticker}_activity_snapshots`)
+- Pin/Unpin button per row; score colour-coded: ≥0.6 hot, ≥0.3 warm, else cold
 
 #### SMC Research (`execute/smc/`)
 
 - `smc.py` — standalone SMC/RIMC detection research prototype (not integrated into main.py)
 - `smcplot.py` — incomplete Matplotlib plot extraction from smc.py (work in progress)
 
-#### Next Integration Point
+#### Next Integration Points
 
-The execution dashboard now displays monitor signal data (trap snapshots, rolling metrics) for visual context. However, `execute/breakout/strategy.py` still implements a simple price range breakout — the calibrated **volatility trap** logic from `monitor/activity_monitor.py` has not yet been wired into the breakout decision. Porting `dynamic_factor` and authenticity checks into `strategy.py` is the next step.
+1. **Monitor → per-ticker snapshots**: `monitor/activity_monitor.py` needs to write `{ticker}_activity_snapshots` keys (one per ticker in `tickers_config.json`) so the execute dashboard signals table shows live data. Currently this key is not written.
+
+2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — `ExecutionController.start_kline` creates `Kline` with no `on_candle` callback. Wiring it back in would enable automated breakout detection per ticker.
 
 ## Other Directories
 

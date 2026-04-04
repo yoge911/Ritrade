@@ -1,4 +1,5 @@
 from typing import Callable, Optional
+import asyncio
 import json
 import websockets
 import redis
@@ -58,41 +59,53 @@ class Kline:
 
         self._candle_buffer: list = []
         self._redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        self._stop_event = asyncio.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
     async def listen(self) -> None:
         """Open the WebSocket connection and process messages until disconnected."""
         uri = f"wss://stream.binance.com:9443/ws/{self.symbol}@kline_{self.interval}"
-        async with websockets.connect(uri) as websocket:
-            while True:
-                data = await websocket.recv()
-                json_data = json.loads(data)
-                kline = json_data['k']
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(uri) as websocket:
+                    while not self._stop_event.is_set():
+                        try:
+                            data = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        except TimeoutError:
+                            continue
 
-                # Publish live price on every tick so Trade can track floating P&L
-                active_data = {
-                    'event_time': json_data['E'],
-                    'symbol':     json_data['s'],
-                    'live_price': float(kline['c']),
-                    'interval':   kline['i'],
-                }
-                self._redis_client.publish(
-                    f"{self.symbol}_event_channel",
-                    json.dumps(active_data)
-                )
+                        json_data = json.loads(data)
+                        kline = json_data['k']
 
-                # Only process completed candles (x = is closed)
-                if kline['x']:
-                    self._candle_buffer.append({
-                        'high':       float(kline['h']),
-                        'low':        float(kline['l']),
-                        'open':       float(kline['o']),
-                        'close':      float(kline['c']),
-                        'close_time': kline['T'],
-                    })
+                        # Publish live price on every tick so Trade can track floating P&L
+                        active_data = {
+                            'event_time': json_data['E'],
+                            'symbol':     json_data['s'],
+                            'live_price': float(kline['c']),
+                            'interval':   kline['i'],
+                        }
+                        self._redis_client.publish(
+                            f"{self.symbol}_event_channel",
+                            json.dumps(active_data)
+                        )
 
-                    # Evict oldest candle if buffer limit is set
-                    if self.candle_buffer_size >= 0 and len(self._candle_buffer) > self.candle_buffer_size:
-                        self._candle_buffer.pop(0)
+                        # Only process completed candles (x = is closed)
+                        if kline['x']:
+                            self._candle_buffer.append({
+                                'high':       float(kline['h']),
+                                'low':        float(kline['l']),
+                                'open':       float(kline['o']),
+                                'close':      float(kline['c']),
+                                'close_time': kline['T'],
+                            })
 
-                    if self.on_candle:
-                        self.on_candle(self._candle_buffer)
+                            if self.candle_buffer_size >= 0 and len(self._candle_buffer) > self.candle_buffer_size:
+                                self._candle_buffer.pop(0)
+
+                            if self.on_candle:
+                                self.on_candle(self._candle_buffer)
+            except websockets.ConnectionClosed:
+                if not self._stop_event.is_set():
+                    await asyncio.sleep(2)

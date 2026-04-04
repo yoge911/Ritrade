@@ -2,10 +2,10 @@ PYTHON    := .venv/bin/python
 STREAMLIT := .venv/bin/streamlit
 RUN_DIR   := .run
 
-.PHONY: start stop redis-check candle-roll main dashboard monitor volume-spike volatility
+.PHONY: start stop redis-check activity-monitor main dashboard monitor volume-spike volatility
 
 # ── Start all required components in the background ────────────────────────────
-start: redis-check | $(RUN_DIR)
+start: stop redis-check | $(RUN_DIR)
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/activity_monitor.py > $(RUN_DIR)/activity_monitor.log 2>&1 & echo $$! > $(RUN_DIR)/activity_monitor.pid
 	@echo "▶  monitor/activity_monitor.py      (pid $$(cat $(RUN_DIR)/activity_monitor.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/app.py > $(RUN_DIR)/monitor.log 2>&1 & echo $$! > $(RUN_DIR)/monitor.pid
@@ -29,7 +29,7 @@ stop:
 	done
 
 # ── Individual foreground targets (dev / debug) ───────────────────────────────
-candle-roll: redis-check
+activity-monitor: redis-check
 	$(PYTHON) monitor/activity_monitor.py
 
 main: redis-check

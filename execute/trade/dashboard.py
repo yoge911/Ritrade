@@ -1,164 +1,329 @@
 import json
 import os
+
 import redis
 from nicegui import ui
 
-# ── Configuration ─────────────────────────────────────────────────────────────
 
 REDIS_HOST = 'localhost'
 REDIS_PORT = 6379
-REDIS_DB   = 0
-
-REDIS_BREAKOUT_KEY = 'breakout_logs'
-REDIS_STATUS_KEY   = 'solusdc_status'
-REDIS_ACTIVITY_KEY = 'solusdc_activity_snapshots'
-REDIS_ROLLING_KEY  = 'solusdc_rolling_metrics_logs'
+REDIS_DB = 0
+COMMAND_CHANNEL = 'execution_commands'
+PINNED_SET_KEY = 'execution_pinned_tickers'
 
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 
 CSS_PATH = os.path.join(os.path.dirname(__file__), 'dashboard.css')
+CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'tickers_config.json',
+)
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+
+def load_tickers() -> list[str]:
+    with open(CONFIG_PATH, 'r') as f:
+        return [item['ticker'].lower() for item in json.load(f)]
+
 
 def load_json(key: str, limit: int = 60) -> list[dict]:
-    """Read a JSON list from Redis, returning at most `limit` entries."""
     return json.loads(redis_client.get(key) or '[]')[:limit]
 
-def make_columns(rows: list[dict]) -> list[dict]:
-    """Build NiceGUI table column definitions from the keys of the first row."""
-    if not rows:
-        return []
-    return [{'name': k, 'label': k.upper(), 'field': k, 'align': 'left'} for k in rows[0].keys()]
 
-# ── Page ──────────────────────────────────────────────────────────────────────
+def load_status(ticker: str) -> dict:
+    return redis_client.hgetall(f'{ticker}_status')
+
+
+def pinned_tickers() -> list[str]:
+    return sorted(redis_client.smembers(PINNED_SET_KEY))
+
+
+def publish_command(action: str, ticker: str, **extra) -> None:
+    payload = {'action': action, 'ticker': ticker}
+    payload.update(extra)
+    redis_client.publish(COMMAND_CHANNEL, json.dumps(payload))
+
+
+def latest_activity_snapshot(ticker: str) -> dict:
+    snapshot = load_json(f'{ticker}_activity_snapshots', limit=1)
+    return snapshot[0] if snapshot else {}
+
+
+def latest_minute_snapshot(ticker: str) -> dict:
+    minute = load_json(f'{ticker}_minute_logs', limit=1)
+    return minute[0] if minute else {}
+
+
+def latest_signal_rows(tickers: list[str]) -> list[dict]:
+    rows = []
+    pinned = set(pinned_tickers())
+
+    for ticker in tickers:
+        activity = latest_activity_snapshot(ticker)
+        minute = latest_minute_snapshot(ticker)
+        rows.append({
+            'ticker': ticker.upper(),
+            'timestamp': activity.get('timestamp', '—'),
+            'qualified': 'Yes' if activity.get('is_qualified_activity') else 'No',
+            'activity_score': activity.get('activity_score', '—'),
+            'trades': activity.get('trades', '—'),
+            'volume': activity.get('volume', '—'),
+            'wap': activity.get('wap', '—'),
+            'std_dev': activity.get('std_dev', '—'),
+            'slope': activity.get('slope', '—'),
+            'minute_timestamp': minute.get('timestamp', '—'),
+            'minute_trades': minute.get('trades', '—'),
+            'minute_volume': minute.get('volume', '—'),
+            'minute_avg_price': minute.get('avg_price', '—'),
+            'is_pinned': ticker in pinned,
+        })
+
+    rows.sort(
+        key=lambda row: row['activity_score'] if isinstance(row['activity_score'], (int, float)) else -1,
+        reverse=True,
+    )
+    return rows
+
+
+def parse_float(value: str | float | int | None) -> float | None:
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_price(value: str | float | None) -> str:
+    number = parse_float(value)
+    return '—' if number is None else f'${number:.2f}'
+
+
+def format_pnl(value: str | float | None) -> str:
+    number = parse_float(value)
+    if number is None:
+        return '—'
+    sign = '+' if number >= 0 else ''
+    return f'{sign}{number:.2f}'
+
+
+def format_metric(value: str | float | int | None, digits: int = 2) -> str:
+    if value in (None, ''):
+        return '—'
+    parsed = parse_float(value)
+    if parsed is None:
+        return str(value)
+    return f'{parsed:.{digits}f}'
+
+
+def pnl_class(value: str | float | None) -> str:
+    number = parse_float(value)
+    if number is None:
+        return 'neutral'
+    if number > 0:
+        return 'profit'
+    if number < 0:
+        return 'loss'
+    return 'neutral'
+
+
+def score_class(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return 'signal-cold'
+    if value >= 0.6:
+        return 'signal-hot'
+    if value >= 0.3:
+        return 'signal-warm'
+    return 'signal-cold'
+
+
+def is_positive_signal(row: dict) -> bool:
+    score = row.get('activity_score')
+    return row.get('qualified') == 'Yes' or (isinstance(score, (int, float)) and score >= 0.3)
+
+
+def send_trailing_stop(ticker: str, status: dict) -> None:
+    live_price = parse_float(status.get('live_price'))
+    position = status.get('position')
+    if live_price is None or position not in {'long', 'short'}:
+        ui.notify(f'{ticker.upper()} needs an active trade and live price for trailing stop.', color='warning')
+        return
+
+    trail_gap = 0.0015
+    stop_price = live_price * (1 - trail_gap) if position == 'long' else live_price * (1 + trail_gap)
+    rounded_stop = round(stop_price, 2)
+    publish_command('modify_stop', ticker, stop_price=rounded_stop)
+    ui.notify(f'Trailing stop nudged for {ticker.upper()} at {rounded_stop}.', color='positive')
+
 
 @ui.page('/')
 def main():
+    tickers = load_tickers()
+
     with open(CSS_PATH) as f:
         ui.add_head_html(f'<style>{f.read()}</style>')
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    with ui.element('div').classes('header w-full'):
-        with ui.row().classes('items-center gap-0'):
-            ui.label('Ritrade').classes('header-title')
-            ui.label('SOLUSDC · 1m').classes('header-ticker')
-        with ui.row().classes('items-center gap-2'):
-            ui.button('Buy',  on_click=lambda: ui.notify('Buy order placed',  color='positive')).classes('btn-buy')
-            ui.button('Sell', on_click=lambda: ui.notify('Sell order placed', color='negative')).classes('btn-sell')
+    with ui.element('div').classes('page-shell'):
+        with ui.element('div').classes('hero-panel'):
+            ui.label('Ritrade').classes('hero-title')
 
-    # ── Main content ──────────────────────────────────────────────────────────
-    with ui.column().classes('w-full q-pa-lg gap-6'):
+        with ui.column().classes('w-full gap-5 content-shell'):
+            with ui.column().classes('gap-3'):
+                ui.label('Pinned Tickers').classes('section-title')
+                pinned_empty = ui.label('Pin a ticker from Signals to start live execution tracking.').classes('empty-state')
+                pinned_container = ui.row().classes('widget-row')
 
-        # ── Trade status cards ────────────────────────────────────────────────
-        with ui.row().classes('w-full gap-3 flex-wrap'):
-            with ui.element('div').classes('stat-card'):
-                ui.label('Price').classes('stat-label')
-                price_val = ui.label('—').classes('stat-value neutral')
+            with ui.column().classes('glass-panel gap-4 full-width-panel'):
+                with ui.row().classes('items-center justify-between'):
+                    ui.label('Monitoring Snapshots').classes('panel-title')
+                    ui.label('full-width live feed').classes('panel-caption')
 
-            with ui.element('div').classes('stat-card'):
-                ui.label('Floating P&L').classes('stat-label')
-                pnl_val = ui.label('—').classes('stat-value neutral')
+                with ui.tabs().props('align=left dense no-caps').classes('snapshot-tabs w-full') as tabs:
+                    tab_activity = ui.tab('20s Snapshots')
+                    tab_minute = ui.tab('1m Signal Snapshots')
 
-            with ui.element('div').classes('stat-card'):
-                ui.label('Zone').classes('stat-label')
-                zone_val = ui.label('—').classes('stat-value neutral')
+                with ui.tab_panels(tabs, value=tab_activity).classes('w-full snapshot-panels'):
+                    with ui.tab_panel(tab_activity).classes('w-full'):
+                        activity_container = ui.column().classes('w-full gap-2')
+                    with ui.tab_panel(tab_minute).classes('w-full'):
+                        minute_container = ui.column().classes('w-full gap-2')
 
-            with ui.element('div').classes('stat-card'):
-                ui.label('Entry Price').classes('stat-label')
-                entry_val = ui.label('—').classes('stat-value neutral')
+    def handle_order(ticker: str, side: str, status: dict) -> None:
+        live_price = status.get('live_price')
+        if not live_price:
+            ui.notify(f'{ticker.upper()} has no live price yet.', color='warning')
+            return
 
-            with ui.element('div').classes('stat-card'):
-                ui.label('Stop Price').classes('stat-label')
-                stop_val = ui.label('—').classes('stat-value neutral')
+        publish_command(
+            'place_limit_order',
+            ticker,
+            side=side,
+            limit_price=live_price,
+            initiated_by='manual',
+            control_mode='manual',
+        )
+        ui.notify(f'{side.upper()} limit submitted for {ticker.upper()}.', color='positive')
 
-            with ui.element('div').classes('stat-card'):
-                ui.label('Target Price').classes('stat-label')
-                target_val = ui.label('—').classes('stat-value neutral')
+    def render_pinned() -> None:
+        current_pinned = pinned_tickers()
+        pinned_empty.set_visibility(not current_pinned)
+        pinned_container.clear()
+
+        for ticker in current_pinned:
+            status = load_status(ticker)
+            state = status.get('state', 'idle')
+            control = status.get('control_mode', 'manual').upper()
+            activity = latest_activity_snapshot(ticker)
+            score = activity.get('activity_score')
+            qualified = activity.get('is_qualified_activity')
+
+            with pinned_container:
+                with ui.element('div').classes('widget-card'):
+                    with ui.row().classes('w-full items-start justify-between widget-header'):
+                        with ui.column().classes('gap-0'):
+                            ui.label(ticker.upper()).classes('widget-title')
+                            ui.label(f'{state.upper()} · {control}').classes('widget-meta')
+                        ui.label('HOT' if qualified else 'WATCH').classes(
+                            f'widget-badge {"widget-badge-hot" if qualified else "widget-badge-muted"}'
+                        )
+
+                    with ui.row().classes('w-full items-end justify-between gap-3 widget-price-row'):
+                        with ui.column().classes('gap-1'):
+                            ui.label('Live Price').classes('mini-label')
+                            ui.label(format_price(status.get('live_price'))).classes('widget-price')
+                        with ui.column().classes('gap-1 text-right'):
+                            ui.label('P&L').classes('mini-label')
+                            ui.label(format_pnl(status.get('pnl'))).classes(f'widget-pnl {pnl_class(status.get("pnl"))}')
+
+                    with ui.row().classes('w-full widget-metrics'):
+                        with ui.element('div').classes('widget-metric'):
+                            ui.label('Entry').classes('mini-label')
+                            ui.label(format_price(status.get('entry_price'))).classes('mini-value')
+                        with ui.element('div').classes('widget-metric'):
+                            ui.label('Stop').classes('mini-label')
+                            ui.label(format_price(status.get('stop_price'))).classes('mini-value')
+                        with ui.element('div').classes('widget-metric'):
+                            ui.label('Score').classes('mini-label')
+                            score_text = '—' if score in (None, '') else f'{float(score):.2f}'
+                            ui.label(score_text).classes(f'mini-value {score_class(score)}')
+
+                    with ui.row().classes('w-full widget-actions'):
+                        ui.button('Buy', on_click=lambda t=ticker, s=status: handle_order(t, 'long', s)).classes('btn-buy widget-btn')
+                        ui.button('Sell', on_click=lambda t=ticker, s=status: handle_order(t, 'short', s)).classes('btn-sell widget-btn')
+                        ui.button('Trail', on_click=lambda t=ticker, s=status: send_trailing_stop(t, s)).classes('btn-secondary widget-btn')
+                        ui.button('Close', on_click=lambda t=ticker: publish_command('close_position', t)).classes('btn-ghost widget-btn')
+
+                    with ui.row().classes('w-full widget-footer'):
+                        ui.label(f'Zone {status.get("zone", "Flat")}').classes('widget-footnote')
+                        ui.label(f'Last {activity.get("timestamp", status.get("last_update", "—"))}').classes('widget-footnote')
+
+    def render_activity_snapshots() -> None:
+        activity_container.clear()
+        rows = latest_signal_rows(tickers)
+        with activity_container:
+            with ui.element('div').classes('live-table'):
+                with ui.element('div').classes('live-table-header'):
+                    for label in ['Ticker', 'Time', 'Score', 'Qualified', 'Trades', 'Volume', 'WAP', 'Slope', 'Action']:
+                        ui.label(label).classes('live-head-cell')
+
+                for row in rows:
+                    pin_action = 'unpin_ticker' if row['is_pinned'] else 'pin_ticker'
+                    pin_label = 'Unpin' if row['is_pinned'] else 'Pin'
+                    score_text = '—' if row['activity_score'] == '—' else f'{float(row["activity_score"]):.2f}'
+                    row_classes = 'live-table-row positive-row' if is_positive_signal(row) else 'live-table-row'
+
+                    with ui.element('div').classes(row_classes):
+                        ui.label(row['ticker']).classes('live-cell live-cell-strong')
+                        ui.label(row['timestamp']).classes('live-cell mono-cell')
+                        ui.label(score_text).classes(f'live-cell mono-cell {score_class(row["activity_score"])}')
+                        ui.label(row['qualified']).classes(
+                            f'live-cell mono-cell {"authentic-yes" if row["qualified"] == "Yes" else "authentic-no"}'
+                        )
+                        ui.label(format_metric(row['trades'], 0)).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['volume'])).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['wap'])).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['slope'])).classes('live-cell mono-cell')
+                        ui.button(
+                            pin_label,
+                            on_click=lambda t=row['ticker'].lower(), a=pin_action: publish_command(a, t),
+                        ).classes('table-action-btn btn-ghost' if row['is_pinned'] else 'table-action-btn btn-secondary')
+
+    def render_minute_snapshots() -> None:
+        minute_container.clear()
+        rows = latest_signal_rows(tickers)
+        with minute_container:
+            with ui.element('div').classes('live-table'):
+                with ui.element('div').classes('live-table-header minute-table-header'):
+                    for label in ['Ticker', '1m Time', 'Trades', 'Volume', 'Avg Price', '20s Score', 'Signal', 'Action']:
+                        ui.label(label).classes('live-head-cell')
+
+                for row in rows:
+                    pin_action = 'unpin_ticker' if row['is_pinned'] else 'pin_ticker'
+                    pin_label = 'Unpin' if row['is_pinned'] else 'Pin'
+                    score_text = '—' if row['activity_score'] == '—' else f'{float(row["activity_score"]):.2f}'
+                    signal_text = 'Positive' if is_positive_signal(row) else 'Watch'
+                    row_classes = 'live-table-row positive-row minute-row' if is_positive_signal(row) else 'live-table-row minute-row'
+
+                    with ui.element('div').classes(row_classes):
+                        ui.label(row['ticker']).classes('live-cell live-cell-strong')
+                        ui.label(row['minute_timestamp']).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['minute_trades'], 0)).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['minute_volume'])).classes('live-cell mono-cell')
+                        ui.label(format_metric(row['minute_avg_price'])).classes('live-cell mono-cell')
+                        ui.label(score_text).classes(f'live-cell mono-cell {score_class(row["activity_score"])}')
+                        ui.label(signal_text).classes(
+                            f'live-cell mono-cell {"authentic-yes" if is_positive_signal(row) else "authentic-no"}'
+                        )
+                        ui.button(
+                            pin_label,
+                            on_click=lambda t=row['ticker'].lower(), a=pin_action: publish_command(a, t),
+                        ).classes('table-action-btn btn-ghost' if row['is_pinned'] else 'table-action-btn btn-secondary')
+
+    def refresh() -> None:
+        render_pinned()
+        render_activity_snapshots()
+        render_minute_snapshots()
+
+    ui.timer(1.0, refresh)
 
 
-
-        # ── Tabbed tables ─────────────────────────────────────────────────────
-        with ui.column().classes('w-full gap-2'):
-            ui.label('Signal & Breakout Data').classes('section-title')
-
-            with ui.tabs().props('align=left dense').classes('w-full') as tabs:
-                tab_activity = ui.tab('Activity Snapshots').props('no-caps')
-                tab_breakout = ui.tab('Breakout Log').props('no-caps')
-                tab_rolling  = ui.tab('Rolling Metrics').props('no-caps')
-
-            with ui.tab_panels(tabs, value=tab_activity).classes('w-full'):
-
-                with ui.tab_panel(tab_activity):
-                    activity_empty = ui.label('Waiting for activity snapshot data…').classes('empty-state')
-                    activity_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
-                    activity_table.add_slot('body', '''
-                        <q-tr :props="props" :class="props.row.is_qualified_activity ? 'qualified-row' : ''">
-                            <q-td v-for="col in props.cols" :key="col.name" :props="props">
-                                {{ col.value }}
-                            </q-td>
-                        </q-tr>
-                    ''')
-
-                with ui.tab_panel(tab_breakout):
-                    breakout_empty = ui.label('Waiting for breakout data…').classes('empty-state')
-                    breakout_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
-
-                with ui.tab_panel(tab_rolling):
-                    rolling_empty = ui.label('Waiting for rolling metrics…').classes('empty-state')
-                    rolling_table = ui.table(columns=[], rows=[], row_key='timestamp').classes('data-table w-full')
-
-    # ── Periodic update ───────────────────────────────────────────────────────
-    def update_ui():
-        # ── Trade status (from execute layer) ─────────────────────────────────
-        data = redis_client.hgetall(REDIS_STATUS_KEY)
-
-        if data:
-            price_val.text  = f"${data.get('current_price', '—')}"
-            entry_val.text  = f"${data.get('entry_price', '—')}"
-            stop_val.text   = f"${data.get('stop_price', '—')}"
-            target_val.text = f"${data.get('target_price', '—')}"
-
-            try:
-                pnl_float = float(data.get('pnl', 0))
-                sign = '+' if pnl_float >= 0 else ''
-                pnl_val.classes(replace='stat-value profit' if pnl_float >= 0 else 'stat-value loss')
-                pnl_val.text = f'{sign}{pnl_float:.2f}'
-            except (ValueError, TypeError):
-                pnl_val.text = '—'
-
-            zone = data.get('zone', '—')
-            zone_val.classes(replace='stat-value profit' if zone == 'Profit' else ('stat-value loss' if zone == 'Loss' else 'stat-value neutral'))
-            zone_val.text = zone
-
-        # ── Activity snapshot table ───────────────────────────────────────────
-        activity_rows = load_json(REDIS_ACTIVITY_KEY)
-        activity_empty.set_visibility(not activity_rows)
-        activity_table.set_visibility(bool(activity_rows))
-        if activity_rows:
-            activity_table.columns = make_columns(activity_rows)
-            activity_table.rows    = activity_rows
-            activity_table.update()
-
-        # ── Breakout log table ────────────────────────────────────────────────
-        breakout_rows = load_json(REDIS_BREAKOUT_KEY)
-        breakout_empty.set_visibility(not breakout_rows)
-        breakout_table.set_visibility(bool(breakout_rows))
-        if breakout_rows:
-            breakout_table.columns = make_columns(breakout_rows)
-            breakout_table.rows    = breakout_rows
-            breakout_table.update()
-
-        # ── Rolling metrics table ─────────────────────────────────────────────
-        rolling_rows = load_json(REDIS_ROLLING_KEY)
-        rolling_empty.set_visibility(not rolling_rows)
-        rolling_table.set_visibility(bool(rolling_rows))
-        if rolling_rows:
-            rolling_table.columns = make_columns(rolling_rows)
-            rolling_table.rows    = rolling_rows
-            rolling_table.update()
-
-    ui.timer(1.0, update_ui)
-
-# ── Run ───────────────────────────────────────────────────────────────────────
-
-ui.run(title='Ritrade', dark=True, favicon='📈')
+ui.run(title='Ritrade', dark=True, favicon='📈', port=8080)

@@ -1,16 +1,29 @@
 from pydantic import BaseModel
 
 
-# Returned by PnLCalculator.check_price() on every price tick.
-# Serialised directly to Redis via model_dump() — field names here are the Redis hash keys.
-
-class PriceStatus(BaseModel):
-    position: str        # 'long' or 'short'
-    entry_price: float
-    zone: str            # 'Profit' or 'Loss'
-    current_price: float
-    sl: float            # P&L at the stop level (negative = unrealised loss)
-    tp: float            # P&L at the target level (positive = unrealised gain)
-    stop_price: float    # Absolute stop price
-    target_price: float  # Absolute target price
-    pnl: float           # Floating P&L at current price
+class PriceLevels(BaseModel):
+    ticker: str
+    is_pinned: bool
+    state: str
+    position: str
+    live_price: float | None = None
+    limit_price: float | None = None
+    entry_price: float | None = None
+    stop_price: float | None = None
+    target_price: float | None = None
+    pnl: float = 0.0
+    zone: str = 'Flat'
+    quantity: float
+    risk_percent: float
+    reward_percent: float
+    initiated_by: str = ''
+    control_mode: str = 'manual'
+    entry_strategy: str = ''
+    exit_strategy: str = ''
+    entry_decision: str = ''
+    exit_decision: str = ''
+    decision_reason: str = ''
+    manual_override_active: bool = False
+    strategy_state: str = '{}'
+    stop_mode: str = ''
+    last_update: str
