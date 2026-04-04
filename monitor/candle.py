@@ -67,7 +67,7 @@ def save_to_redis() -> None:
     redis_client.set("minute_logs", json.dumps([d.model_dump() for d in minute_logs]))
 
 def format_timestamp(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000).strftime('%H:%M:%S')
+    return datetime.fromtimestamp(ms / 1000).strftime('%H:%M:%S.%f')[:-3]
 
 def format_minute(dt: datetime) -> str:
     return dt.strftime('%Y-%m-%d %H:%M:%S')

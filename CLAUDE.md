@@ -73,11 +73,13 @@ Lives at the repo root; used by both monitor and execute layers.
 #### Core Engine (`activity_monitor.py`)
 
 - Subscribes to normalized Redis trade-event channels (`{ticker}_trade_events`)
-- Maintains a rolling 10-second window of trades, trimming old entries on every tick
-- At exactly **20 seconds into each minute** (`event_time % 60000`), fires a trap snapshot
-- Authenticity check before firing: volume, trade count, and std_dev must all fall within calibrated thresholds
-- Computes `dynamic_factor` (0–1): average of three normalized values (volume, std_dev, trade_count) using 20th–80th percentile banding
-- Writes three Redis keys: `trap_logs`, `minute_logs`, `rolling_metrics_logs`
+- Maintains a rolling `ROLLING_WINDOW_MS` (10 s) window of trades, trimming old entries on every tick
+- On every trade tick, computes a rolling `ActivitySnapshot` and checks for a **rising-edge qualification**: when the rolling snapshot transitions from `is_qualified_activity = False` → `True`, a setup begins
+- Accumulates all trades into a per-ticker setup buffer (`active_setup_trades`) from the qualifying tick onward
+- After `QUALIFICATION_WINDOW_MS` (20 s) from the setup start, finalizes a **setup snapshot** from the full buffer, stamped with `setup_start_time`, `setup_end_time`, `qualification_duration_ms`, and `trigger_reason`
+- Qualification check: volume, trade count, and std_dev must all fall within calibrated thresholds
+- `activity_score` (0–1): average of three normalized values (volume, std_dev, trade_count) using 20th–80th percentile banding
+- Writes Redis keys: `trap_logs`, `minute_logs`, `rolling_metrics_logs` (global) and `{ticker}_activity_snapshots`, `{ticker}_rolling_metrics_logs`, `{ticker}_minute_logs` (per-ticker)
 
 `activity_monitor.py` is the **active engine**. `candle.py` is the older bucket-based version — both are kept, but `activity_monitor.py` is the current implementation. Do not confuse them.
 
@@ -89,7 +91,7 @@ The thresholds in `activity_monitor.py` (and `candle.py`) are specific to **BTCU
 
 | Key | Written by | Read by | Content |
 |---|---|---|---|
-| `trap_logs` | `activity_monitor.py` | `app.py` tab 2 | 20s trap snapshots |
+| `trap_logs` | `activity_monitor.py` | `app.py` tab 2 | qualification-triggered setup snapshots |
 | `minute_logs` | `activity_monitor.py` | `app.py` tab 3 | per-minute summaries |
 | `rolling_metrics_logs` | `activity_monitor.py` | `app.py` tab 1 | rolling 10s metrics |
 | `{ticker}_activity_snapshots` | `activity_monitor.py` | `execute/trade/dashboard.py` (signals table) | per-ticker activity snapshots |
@@ -100,7 +102,7 @@ The thresholds in `activity_monitor.py` (and `candle.py`) are specific to **BTCU
 
 NiceGUI app running on port 8081. Three tabs displaying signal data from Redis:
 - **Micro Buckets (10s)** — rolling window metrics (`rolling_metrics_logs`)
-- **20s Trap Snapshots** — trap trigger data (`trap_logs`)
+- **Setup Snapshots** — qualification-triggered setup data (`trap_logs`)
 - **1-Minute Summary** — per-minute candle summaries (`minute_logs`)
 
 Additional Streamlit pages (`pages/`) are kept for reference but are no longer part of the live system.
@@ -209,7 +211,7 @@ Two sections:
 
 #### Next Integration Points
 
-1. **Monitor → per-ticker snapshots**: `monitor/activity_monitor.py` needs to write `{ticker}_activity_snapshots` keys (one per ticker in `tickers_config.json`) so the execute dashboard signals table shows live data. Currently this key is not written.
+1. **Monitor → per-ticker snapshots**: `monitor/activity_monitor.py` writes `{ticker}_activity_snapshots` (finalized setup snapshots) read by the execute dashboard signals table. Rolling metrics are written to `{ticker}_rolling_metrics_logs`.
 
 2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — `ExecutionController.start_kline` creates `Kline` with no `on_candle` callback. Wiring it back in would enable automated breakout detection per ticker.
 
@@ -222,5 +224,7 @@ Two sections:
 
 - `master_*` variables = accumulated across the full minute
 - `bucket_*` variables = scoped to a single time window
-- `already_triggered_20s` — guard flag ensuring the trap fires only once per minute
+- `active_setup_*` fields — per-ticker state tracking an in-progress qualification setup (start time, trades buffer, trigger reason); cleared once the finalized snapshot is emitted
+- `last_trigger_qualified` — edge-detector flag; setup only starts on a `False → True` transition of `is_qualified_activity`
+- `ROLLING_WINDOW_MS` / `QUALIFICATION_WINDOW_MS` — constants governing the rolling trade window (10 s) and the setup collection window (20 s)
 - WAP (weighted average price) is used instead of simple average throughout

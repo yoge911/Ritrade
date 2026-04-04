@@ -1,6 +1,29 @@
 # Ritrade
 
-An automated cryptocurrency trading system built around a **volatility trap strategy** on 1-minute candles. Split into two independent layers that communicate via Redis.
+An automated cryptocurrency trading system built around a **microstructure-first volatility trap strategy**. Split into two independent layers that communicate via Redis.
+
+## Goal
+
+Ritrade is built to monitor live market activity, surface actionable trade setups, and then manage an open trade continuously until exit. The core idea is not just to detect an entry, but to keep reacting to market updates while the trade is alive:
+
+```python
+while trade_is_open:
+    receive_market_update()
+    update_trade_state()
+    update_stop_logic()
+    check_exit_conditions()
+
+    if exit_required:
+        execute_exit()
+        break
+```
+
+In practice, that means the app aims to:
+- detect meaningful market activity from live trade flow
+- convert that activity into tradeable signals
+- track open positions in real time
+- keep stop and exit logic updated as price evolves
+- close the trade when exit conditions are met
 
 - **`monitor/`** — passive observation: signal generation from normalized Redis market data, NiceGUI dashboard
 - **`market_data/`** — shared ingestion layer: Binance websocket retrieval, normalization, Redis publishing
@@ -12,25 +35,24 @@ An automated cryptocurrency trading system built around a **volatility trap stra
 
 ### Strategy: Volatility Trap
 
-Ritrade monitors live trade data from Binance and identifies authentic momentum windows at the 20-second mark of each candle.
+Ritrade monitors live trade data from Binance and identifies authentic momentum from the trade stream itself, not from a fixed candle timestamp. The monitor keeps a rolling 10-second diagnostic view and starts a setup window when live activity first becomes qualified.
 
-**Flow per 1-minute candle:**
+**Current signal flow:**
 
 ```
-New 1-Min Candle Opens
+Each trade updates rolling 10s metrics
         ↓
-Start Collecting Trade Data (rolling 10s window)
+Monitor checks volume, trade count, and std_dev against calibrated thresholds
         ↓
-     At 20s:
-Authenticity check: volume, trade count, std_dev within calibrated thresholds
+Rolling window transitions into qualified activity
         ↓
-  If Authentic:                   Else:
-Compute dynamic_factor        Skip This Candle
-Fire trap snapshot → Redis
+Start a 20s setup qualification window
         ↓
-Execute layer reads signal
-Evaluate entry via strategy
-Manage trade lifecycle (SL / TP)
+Accumulate trades only for that setup window
+        ↓
+When the setup window completes, finalize one setup snapshot → Redis
+        ↓
+Execution layer reads signal state and manages trade lifecycle
 ```
 
 ### Signal Authenticity
@@ -39,13 +61,19 @@ The monitor distinguishes real momentum from noise:
 
 | Condition | Meaning | Action |
 |---|---|---|
-| High std_dev + high trade frequency | Real momentum | Fire trap, compute dynamic_factor |
+| High std_dev + high trade frequency | Real momentum | Start or strengthen a setup candidate |
 | High std_dev + low trade frequency | Manipulated / fake | Skip |
 | Low std_dev + steady frequency | Calm market | Skip |
 
-### dynamic_factor
+### Activity Score
 
-A 0–1 score computed as the average of three normalized values (volume, std_dev, trade_count), each banded at the 20th–80th percentile of calibrated baseline data.
+A 0–1 score computed as the average of three normalized values (volume, std_dev, trade_count), each banded at the calibrated min/max threshold range per ticker.
+
+In the current monitor:
+- rolling snapshots are produced continuously from the latest 10-second window
+- a setup begins when rolling activity transitions from unqualified to qualified
+- the finalized setup snapshot summarizes the intended 20-second setup window only
+- the first trade after that window can trigger finalization, but does not extend the summarized setup window
 
 ---
 
@@ -65,9 +93,9 @@ monitor/activity_monitor.py         →  Redis snapshot keys           →  moni
 | Key | Written by | Read by | Content |
 |---|---|---|---|
 | `rolling_metrics_logs` | `activity_monitor.py` | `monitor/app.py` tab 1 | Rolling 10s window metrics |
-| `trap_logs` | `activity_monitor.py` | `monitor/app.py` tab 2 | 20s trap snapshots |
+| `trap_logs` | `activity_monitor.py` | `monitor/app.py` tab 2 | Finalized setup snapshots from the 20s qualification window |
 | `minute_logs` | `activity_monitor.py` | `monitor/app.py` tab 3 | Per-minute summaries |
-| `{ticker}_activity_snapshots` | `activity_monitor.py` | `trade/dashboard.py` signals table | Per-ticker activity scores |
+| `{ticker}_activity_snapshots` | `activity_monitor.py` | `trade/dashboard.py` signals table | Per-ticker finalized setup snapshots |
 | `{ticker}_trade_events` | `market_data/run_trade_ingestion.py` | `monitor/activity_monitor.py` | Normalized trade event stream |
 | `{ticker}_kline_events` | `market_data/run_kline_ingestion.py` | future consumers | Normalized kline event stream |
 | `{ticker}_status` | `services/trade.py` (hset) | `trade/dashboard.py` pinned panels | Full trade state: price, P&L, SL, TP, decisions |
@@ -128,9 +156,9 @@ execute/
 
 ### Time Windows
 
-- `master_*` — metrics accumulated across the full minute
-- `bucket_*` — metrics scoped to a single 10-second window
-- `already_triggered_20s` — guard flag ensuring the trap fires only once per minute
+- **Rolling window (10s)** — continuous diagnostics used for live monitoring and trigger detection
+- **Setup qualification window (20s)** — starts when rolling activity becomes qualified and is used to build one finalized setup snapshot
+- **Minute rollover summary** — emitted on minute change for a coarse overview, but not used as the primary strategy anchor
 - WAP (weighted average price) is used instead of simple average throughout
 
 ---
@@ -155,7 +183,7 @@ Ritrade/
 │
 ├── monitor/                        # Passive observation layer
 │   ├── activity_monitor.py         # Core signal engine — consumes normalized trade events from Redis
-│   ├── candle.py                   # Older bucket-based engine (kept for reference)
+│   ├── candle.py                   # Older bucket-based engine (kept for reference, not used in live flow)
 │   ├── app.py                      # NiceGUI monitor dashboard (3 tabs, port 8081)
 │   ├── signal_score.py             # Standalone 0–100 signal scorer (not yet integrated)
 │   ├── volume_spike.py             # Independent volume spike audio alerts
@@ -340,12 +368,15 @@ The execute layer supports two control modes per trade:
 
 ### Monitor Dashboard (`monitor/app.py`) — port 8081
 
-NiceGUI app. Read-only signal observer. Three tabs:
+NiceGUI app. Read-only signal observer. It shows:
+- summary cards for current monitor state
+- per-ticker snapshot cards with live price, rolling score, latest setup, and minute summary
+- three feed tabs for rolling diagnostics, finalized setups, and minute summaries
 
 | Tab | Redis Key | Content |
 |---|---|---|
-| Micro Buckets (10s) | `rolling_metrics_logs` | Rolling 10s window metrics |
-| 20s Trap Snapshots | `trap_logs` | WAP, std_dev, slope, volumes at trap time |
+| Rolling 10s Diagnostics | `rolling_metrics_logs` | Rolling 10s window metrics |
+| Finalized Setup Snapshots | `trap_logs` | Finalized setup-window summaries with trigger and timing metadata |
 | 1-Minute Summary | `minute_logs` | Per-minute trade count, volume, buy/sell breakdown |
 
 ### Execution Dashboard (`execute/trade/dashboard.py`) — port 8080
@@ -357,7 +388,7 @@ Interactive execution surface. Two sections:
 - Buy (long limit), Sell (short limit), Trail, Close buttons
 
 **Monitoring Snapshots** — tabbed feed from monitor:
-- 20s Snapshots: per-ticker activity score, qualified status, trades, volume, WAP, slope
+- Finalized setup snapshots: per-ticker activity score, qualified status, trades, volume, WAP, slope
 - 1m Signal Snapshots: per-minute candle summary per ticker
 
 ---
@@ -393,7 +424,7 @@ Not yet integrated into the live engine.
 
 ## Next Integration Points
 
-1. **Monitor → per-ticker snapshots**: `activity_monitor.py` needs to write `{ticker}_activity_snapshots` keys so the execute dashboard signals table shows live data.
+1. **Signal semantics polish**: the current rolling `activity_score` is still qualification-gated, so non-qualified windows often show `0.0`; a future enhancement could expose a continuous pre-qualification build-up score.
 2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — wiring it into `ExecutionController.start_kline` would enable automated breakout detection per ticker.
 
 ---
