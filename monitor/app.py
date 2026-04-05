@@ -321,7 +321,7 @@ def main():
 
         last_updated.text = f'Updated {datetime.now().strftime("%H:%M:%S")}'
 
-    ui.timer(2.0, update_ui)
+    ui.timer(1.0, update_ui)
 
 
 ui.run(title='Ritrade Monitor', dark=True, favicon='📊', port=8081, reload=False)

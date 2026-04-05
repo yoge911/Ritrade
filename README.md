@@ -103,6 +103,51 @@ monitor/activity_monitor.py         →  Redis snapshot keys           →  moni
 | `execution_commands` | `trade/dashboard.py` (pub) | `breakout/main.py` (sub) | JSON commands: pin, order, cancel, close |
 | `execution_pinned_tickers` | `breakout/main.py` (sadd/srem) | `breakout/main.py` (smembers) | Set of pinned tickers, persisted across restarts |
 
+### Logged Data
+
+You can inspect the data saved in Redis directly from the terminal.
+
+List available keys:
+
+```bash
+redis-cli KEYS '*'
+```
+
+Read the global monitor logs:
+
+```bash
+redis-cli GET rolling_metrics_logs
+redis-cli GET trap_logs
+redis-cli GET minute_logs
+```
+
+Read per-ticker saved data, for example `btcusdc`:
+
+```bash
+redis-cli GET btcusdc_activity_snapshots
+redis-cli GET btcusdc_rolling_metrics_logs
+redis-cli GET btcusdc_minute_logs
+```
+
+Watch live incoming trade events for a ticker:
+
+```bash
+redis-cli SUBSCRIBE btcusdc_trade_events
+```
+
+Watch all Redis commands in real time:
+
+```bash
+redis-cli MONITOR
+```
+
+Pretty-print JSON output when `jq` is installed:
+
+```bash
+redis-cli --raw GET rolling_metrics_logs | jq
+redis-cli --raw GET btcusdc_rolling_metrics_logs | jq
+```
+
 ### Execute Layer Flow
 
 ```

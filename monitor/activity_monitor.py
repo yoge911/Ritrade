@@ -70,6 +70,7 @@ class TickerState:
     def __init__(self, config: TickerConfig):
         self.config = config
         self.rolling_window_trades: list[TradeEvent] = []
+        self.current_minute_trades: list[TradeEvent] = []
         self.activity_snapshots: list[ActivitySnapshot] = []
         self.minute_logs: list[MinuteSummary] = []
         self.rolling_metrics_logs: list[ActivitySnapshot] = []
@@ -88,9 +89,12 @@ class TickerState:
             self.current_minute = trade_minute
 
         if trade_minute != self.current_minute:
-            minute_summary = generate_minute_data(self.current_minute, self.rolling_window_trades, self.config.ticker)
+            minute_summary = generate_minute_data(self.current_minute, self.current_minute_trades, self.config.ticker)
             append_capped(self.minute_logs, minute_summary)
             self.current_minute = trade_minute
+            self.current_minute_trades = []
+
+        self.current_minute_trades.append(event)
 
         self.rolling_window_trades.append(event)
         cutoff_time = event.event_time - ROLLING_WINDOW_MS

@@ -106,9 +106,9 @@ def test_activity_monitor_generates_setup_snapshot_from_full_qualification_windo
 
     assert len(activity_rows) == 1
     assert activity_rows[0]['ticker'] == 'btcusdc'
-    assert activity_rows[0]['timestamp'].endswith('00:23')
-    assert activity_rows[0]['setup_start_time'].endswith('00:03')
-    assert activity_rows[0]['setup_end_time'].endswith('00:23')
+    assert activity_rows[0]['timestamp'].endswith(':23.000')
+    assert activity_rows[0]['setup_start_time'].endswith(':03.000')
+    assert activity_rows[0]['setup_end_time'].endswith(':23.000')
     assert activity_rows[0]['qualification_duration_ms'] == QUALIFICATION_WINDOW_MS
     assert activity_rows[0]['trigger_reason'] == 'rolling_snapshot_qualified'
     assert activity_rows[0]['trades'] == 2
@@ -150,8 +150,8 @@ def test_activity_monitor_keeps_setup_active_until_first_trade_after_window():
     assert state.active_setup_start_time is None
     assert state.active_setup_trades == []
     assert len(state.activity_snapshots) == 1
-    assert state.activity_snapshots[0].timestamp.endswith('00:23')
-    assert state.activity_snapshots[0].setup_end_time.endswith('00:23')
+    assert state.activity_snapshots[0].timestamp.endswith(':23.000')
+    assert state.activity_snapshots[0].setup_end_time.endswith(':23.000')
     assert state.activity_snapshots[0].qualification_duration_ms == QUALIFICATION_WINDOW_MS
 
 
@@ -170,8 +170,8 @@ def test_activity_monitor_finalizes_on_late_trade_but_clips_snapshot_to_window()
         monitor.handle_trade_event(event)
 
     snapshot = monitor.states['btcusdc'].activity_snapshots[0]
-    assert snapshot.timestamp.endswith('00:23')
-    assert snapshot.setup_end_time.endswith('00:23')
+    assert snapshot.timestamp.endswith(':23.000')
+    assert snapshot.setup_end_time.endswith(':23.000')
     assert snapshot.qualification_duration_ms == QUALIFICATION_WINDOW_MS
     assert snapshot.trades == 2
     assert snapshot.volume == 0.4
@@ -260,6 +260,28 @@ def test_activity_monitor_writes_minute_logs_on_rollover():
     assert minute_rows[0]['timestamp'].endswith('00:00')
     assert minute_rows[0]['trades'] == 2
     assert len(global_minutes) == 1
+
+
+def test_activity_monitor_minute_logs_cover_full_prior_minute_not_rolling_window():
+    fake_redis = FakeRedis()
+    monitor = ActivityMonitor([build_config()], fake_redis)
+    monitor.initialize_redis()
+
+    events = [
+        build_trade_event(1000, 100.0, 0.20),
+        build_trade_event(20000, 100.2, 0.20),
+        build_trade_event(61000, 100.4, 0.20),
+    ]
+
+    for event in events:
+        monitor.handle_trade_event(event)
+
+    minute_rows = json.loads(fake_redis.values[minute_logs_key('btcusdc')])
+
+    assert len(minute_rows) == 1
+    assert minute_rows[0]['timestamp'].endswith('00:00')
+    assert minute_rows[0]['trades'] == 2
+    assert minute_rows[0]['volume'] == 0.4
 
 
 def test_activity_monitor_exposes_qualification_window_constant():

@@ -44,13 +44,13 @@ def publish_command(action: str, ticker: str, **extra) -> None:
 
 
 def latest_activity_snapshot(ticker: str) -> dict:
-    snapshot = load_json(f'{ticker}_activity_snapshots', limit=1)
-    return snapshot[0] if snapshot else {}
+    snapshot = load_json(f'{ticker}_activity_snapshots', limit=60)
+    return snapshot[-1] if snapshot else {}
 
 
 def latest_minute_snapshot(ticker: str) -> dict:
-    minute = load_json(f'{ticker}_minute_logs', limit=1)
-    return minute[0] if minute else {}
+    minute = load_json(f'{ticker}_minute_logs', limit=60)
+    return minute[-1] if minute else {}
 
 
 def latest_signal_rows(tickers: list[str]) -> list[dict]:

@@ -9,7 +9,7 @@
     "max_std_dev": 4.0196
   },
   {
-    "ticker": "SOLUSDC",
+    "ticker": "ETHUSDC",
     "min_volume_threshold": 0.1003,
     "max_volume_threshold": 1.1916,
     "min_trade_count": 24,
