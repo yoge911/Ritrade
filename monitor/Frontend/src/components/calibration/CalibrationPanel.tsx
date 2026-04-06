@@ -138,16 +138,7 @@ export function CalibrationPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600 }}>Calibration Periods</h2>
-          <p className="text-muted text-sm" style={{ margin: '0.25rem 0 0 0' }}>
-            Select an archive period, choose trailing archive hours, compute a preview, then activate it for runtime.
-          </p>
         </div>
-        {calibrationState && (
-          <StatusBadge 
-            label={`Mode ${calibrationState.activation_mode.toUpperCase()}`} 
-            variant={isAuto ? 'hot' : 'warm'} 
-          />
-        )}
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -209,13 +200,16 @@ export function CalibrationPanel() {
                variant={displayedSnapshotStatus === 'active' ? 'hot' : 'warm'}
              />
             <StatusBadge label={`Archive Window ${displayedArchiveHours}h`} variant="cold" />
+            {calibrationState && (
+              <StatusBadge
+                label={`Mode ${calibrationState.activation_mode.toUpperCase()}`}
+                variant={isAuto ? 'hot' : 'warm'}
+              />
+            )}
           </div>
           {displayedPeriodId && (
             <div className="text-xs text-muted">
-              Displaying thresholds for {displayedPeriodId}
-              {(displayedPeriodId !== selectedPeriodId || displayedArchiveHours !== archiveHours)
-                ? ` while current selection is ${selectedPeriodId || 'none'} / ${archiveHours}h`
-                : ''}
+              Threshold Id: {displayedPeriodId} ({displayedArchiveHours}h)
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>

@@ -6,27 +6,34 @@ import type { RollingMetric, SetupSnapshot, MinuteSnapshot } from '../../types/m
 
 export function FeedsTabs() {
   const [activeTab, setActiveTab] = useState<'rolling' | 'setup' | 'minute'>('rolling');
+  const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="glass-panel monitor-feeds-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600 }}>Monitor Feeds</h2>
-          <p className="text-muted text-sm" style={{ margin: '0.25rem 0 0 0' }}>Latest rows shown first</p>
         </div>
+        <button className="btn" onClick={() => setIsOpen((value) => !value)}>
+          {isOpen ? 'Hide Feeds' : 'Show Feeds'}
+        </button>
       </div>
-      
-      <div style={{ display: 'flex', gap: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.5rem' }}>
-        <TabButton active={activeTab === 'rolling'} onClick={() => setActiveTab('rolling')}>Rolling 10s Diagnostics</TabButton>
-        <TabButton active={activeTab === 'setup'} onClick={() => setActiveTab('setup')}>Finalized Setup Snapshots</TabButton>
-        <TabButton active={activeTab === 'minute'} onClick={() => setActiveTab('minute')}>Minute Rollover Summary</TabButton>
-      </div>
-      
-      <div>
-        {activeTab === 'rolling' && <RollingTable />}
-        {activeTab === 'setup' && <SetupTable />}
-        {activeTab === 'minute' && <MinuteTable />}
-      </div>
+
+      {isOpen && (
+        <>
+          <div style={{ display: 'flex', gap: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.5rem' }}>
+            <TabButton active={activeTab === 'rolling'} onClick={() => setActiveTab('rolling')}>Rolling 10s Diagnostics</TabButton>
+            <TabButton active={activeTab === 'setup'} onClick={() => setActiveTab('setup')}>Finalized Setup Snapshots</TabButton>
+            <TabButton active={activeTab === 'minute'} onClick={() => setActiveTab('minute')}>Minute Rollover Summary</TabButton>
+          </div>
+          
+          <div>
+            {activeTab === 'rolling' && <RollingTable />}
+            {activeTab === 'setup' && <SetupTable />}
+            {activeTab === 'minute' && <MinuteTable />}
+          </div>
+        </>
+      )}
     </div>
   );
 }
