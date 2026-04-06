@@ -17,6 +17,10 @@ start: stop redis-check | $(RUN_DIR)
 	@echo "▶  execute.breakout.main            (pid $$(cat $(RUN_DIR)/main.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m execute.trade.dashboard > $(RUN_DIR)/dashboard.log 2>&1 & echo $$! > $(RUN_DIR)/dashboard.pid
 	@echo "▶  execute.trade.dashboard          (pid $$(cat $(RUN_DIR)/dashboard.pid))"
+	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m uvicorn monitor.Frontend.api.server:app --port 8082 > $(RUN_DIR)/monitor_api.log 2>&1 & echo $$! > $(RUN_DIR)/monitor_api.pid
+	@echo "▶  monitor API bridge               (pid $$(cat $(RUN_DIR)/monitor_api.pid))"
+	@nohup sh -c "cd monitor/Frontend && npm run dev" > $(RUN_DIR)/monitor_ui.log 2>&1 & echo $$! > $(RUN_DIR)/monitor_ui.pid
+	@echo "▶  monitor React UI                 (pid $$(cat $(RUN_DIR)/monitor_ui.pid))"
 	@echo ""
 	@echo "Logs → .run/   |   Stop with: make stop"
 
@@ -31,7 +35,7 @@ stop:
 			|| echo "⚠  already gone  ($$f)"; \
 		rm -f "$$f"; \
 	done
-	@lsof -ti tcp:8080 -ti tcp:8081 2>/dev/null | sort -u | while read pid; do \
+	@lsof -ti tcp:5173 -ti tcp:8080 -ti tcp:8081 -ti tcp:8082 2>/dev/null | sort -u | while read pid; do \
 		kill "$$pid" 2>/dev/null && echo "✋ killed orphan  pid $$pid"; \
 	done; true
 
@@ -53,6 +57,12 @@ dashboard:
 
 monitor: redis-check
 	$(PYTHON) monitor/app.py
+
+monitor-api: redis-check
+	$(PYTHON) -m uvicorn monitor.Frontend.api.server:app --port 8082 --reload
+
+monitor-ui:
+	cd monitor/Frontend && npm run dev
 
 # ── Optional components ───────────────────────────────────────────────────────
 volume-spike: redis-check

@@ -1,0 +1,191 @@
+:root {
+  --bg-base: #0f111a;
+  --bg-panel: rgba(26, 29, 41, 0.6);
+  --bg-card: rgba(36, 40, 56, 0.4);
+  
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-hover: rgba(255, 255, 255, 0.1);
+  --border-active: rgba(255, 255, 255, 0.2);
+  
+  --text-main: #f0f0f6;
+  --text-muted: #a0a4b8;
+  --text-dim: #6c7086;
+  
+  --signal-cold-bg: rgba(59, 130, 246, 0.1);
+  --signal-cold-text: #60a5fa;
+  
+  --signal-warm-bg: rgba(245, 158, 11, 0.1);
+  --signal-warm-text: #fbbf24;
+  
+  --signal-hot-bg: rgba(239, 68, 68, 0.15);
+  --signal-hot-text: #f87171;
+  --signal-hot-border: rgba(239, 68, 68, 0.3);
+
+  --accent-primary: #3b82f6;
+  --accent-hover: #2563eb;
+  
+  --font-base: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-base);
+  color: var(--text-main);
+  font-family: var(--font-base);
+  -webkit-font-smoothing: antialiased;
+  background-image: radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.05) 0%, transparent 50%);
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Typography utilities */
+.text-main { color: var(--text-main); }
+.text-muted { color: var(--text-muted); }
+.font-mono { font-family: var(--font-mono); }
+.text-sm { font-size: 0.875rem; }
+.text-xs { font-size: 0.75rem; }
+
+/* Dashboard global layout */
+.dashboard-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Glass Panels */
+.glass-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  padding: 1.5rem;
+}
+
+/* Signals */
+.signal-cold {
+  background: var(--signal-cold-bg);
+  color: var(--signal-cold-text);
+  border: 1px solid transparent;
+}
+
+.signal-warm {
+  background: var(--signal-warm-bg);
+  color: var(--signal-warm-text);
+  border: 1px solid transparent;
+}
+
+.signal-hot {
+  background: var(--signal-hot-bg);
+  color: var(--signal-hot-text);
+  border: 1px solid var(--signal-hot-border);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.1);
+}
+
+/* Buttons */
+.btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.05);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: white;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Inputs / Selects */
+.select-input, .text-input {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  padding: 0.5rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  outline: none;
+}
+.select-input:focus, .text-input:focus {
+  border-color: var(--accent-primary);
+}
+
+/* Status badge */
+.status-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* DataTable */
+.data-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.data-table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border-active);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.data-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-main);
+}
+.data-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+.data-table td.numeric {
+  font-family: var(--font-mono);
+  text-align: left; /* Wait, usually right aligned, let's keep it via columns config */
+}
+
+/* Loading animations */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  animation: spin 1s linear infinite;
+}
