@@ -1,3 +1,5 @@
+"""Consume live trade events, compute monitor metrics, and apply the active calibration run."""
+
 import asyncio
 import json
 import os
@@ -31,7 +33,7 @@ from monitor.activity_metrics import (
     normalize_value,
     trim_trades_to_window,
 )
-from monitor.calibration_store import DEFAULT_CALIBRATION_PATH, load_calibration_snapshot
+from monitor.calibration_store import DEFAULT_CALIBRATION_PATH, load_calibration_snapshot, resolve_active_calibration_snapshot
 
 MAX_LOG_ENTRIES = 60
 QUALIFICATION_WINDOW_MS = 20000
@@ -40,6 +42,8 @@ CALIBRATION_RELOAD_INTERVAL_SECONDS = 60
 
 
 class TickerConfig(BaseModel):
+    """Runtime threshold configuration for one ticker."""
+
     ticker: str
     min_volume_threshold: float
     max_volume_threshold: float
@@ -50,6 +54,8 @@ class TickerConfig(BaseModel):
 
 
 class ActivitySnapshot(BaseModel):
+    """Serialized rolling or finalized activity snapshot published to Redis and the UI."""
+
     ticker: str
     timestamp: str
     event_time_ms: int | None = None
@@ -69,6 +75,8 @@ class ActivitySnapshot(BaseModel):
 
 
 class MinuteSummary(BaseModel):
+    """Per-minute aggregate of trade activity for one ticker."""
+
     ticker: str
     timestamp: str
     trades: int
@@ -77,6 +85,8 @@ class MinuteSummary(BaseModel):
 
 
 class TickerState:
+    """In-memory rolling buffers and setup state for a single monitored ticker."""
+
     def __init__(self, ticker: str, config: TickerConfig | None = None):
         self.ticker = ticker.lower()
         self.config = config
@@ -153,6 +163,8 @@ class TickerState:
 
 
 class ActivityMonitor:
+    """Own Redis persistence and per-ticker runtime state for the live monitor engine."""
+
     def __init__(
         self,
         configs: list[TickerConfig],
@@ -257,6 +269,8 @@ class ActivityMonitor:
             pubsub.close()
 
     def refresh_configs(self, configs: list[TickerConfig]) -> None:
+        """Apply a new set of runtime thresholds to every tracked ticker state."""
+
         config_map = {config.ticker.lower(): config for config in configs}
         for ticker, state in self.states.items():
             state.config = config_map.get(ticker)
@@ -290,6 +304,8 @@ def prune_expired_dict_logs(items: list[dict], current_event_time: int, retentio
 
 
 def load_enabled_tickers() -> list[str]:
+    """Load the configured ticker list from the shared repo config."""
+
     config_path = os.path.join(ROOT_DIR, 'tickers_config.json')
     if not os.path.exists(config_path):
         print(f'⚠️  Config file not found at {config_path}')
@@ -300,7 +316,13 @@ def load_enabled_tickers() -> list[str]:
 
 
 def load_runtime_configs(calibration_path: Path | None = None) -> list[TickerConfig]:
-    snapshot = load_calibration_snapshot(calibration_path)
+    """Resolve ticker thresholds from the active calibration run or an explicit snapshot path."""
+
+    snapshot = (
+        load_calibration_snapshot(calibration_path)
+        if calibration_path and calibration_path != DEFAULT_CALIBRATION_PATH
+        else resolve_active_calibration_snapshot()
+    )
     if snapshot is None:
         return []
     if snapshot.metric_version != ACTIVITY_METRIC_VERSION:

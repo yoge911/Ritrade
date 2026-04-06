@@ -171,7 +171,7 @@ class DashboardPushSubscriber:
         if self.task and not self.task.done():
             return
         self.running = True
-        self.task = background_tasks.create(self.listen(), name=f'{self.channel}_listener')
+        self.task = background_tasks.create(self.run(), name=f'{self.channel}_listener')
 
     async def shutdown(self) -> None:
         self.running = False
@@ -184,6 +184,21 @@ class DashboardPushSubscriber:
                 pass
             self.task = None
 
+    async def run(self) -> None:
+        try:
+            while self.running:
+                try:
+                    await self.listen()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f'⚠️ Execution dashboard listener error on {self.channel}: {exc}')
+                    await asyncio.sleep(1.0)
+        finally:
+            if self.pubsub is not None:
+                self.pubsub.close()
+                self.pubsub = None
+
     async def listen(self) -> None:
         self.pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
         self.pubsub.subscribe(self.channel)
@@ -191,7 +206,10 @@ class DashboardPushSubscriber:
             while self.running:
                 message = self.pubsub.get_message(timeout=1.0)
                 if message and message.get('type') == 'message':
-                    self.refresh_callback()
+                    try:
+                        self.refresh_callback()
+                    except Exception as exc:
+                        print(f'⚠️ Execution dashboard refresh failed on {self.channel}: {exc}')
                 await asyncio.sleep(0.05)
         finally:
             if self.pubsub is not None:
