@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "run_id": "20260406T121622Z",
+  "metric_version": 1,
+  "generated_at": "2026-04-06T12:16:22Z",
+  "fresh_entry_count": 2,
+  "reused_entry_count": 0,
+  "tickers": [
+    {
+      "ticker": "BTCUSDC",
+      "window_ms": 10000,
+      "sampling_interval_ms": 1000,
+      "recalculated_at": "2026-04-06T12:16:22Z",
+      "lookback_duration_minutes": 120,
+      "sample_count": 6445,
+      "lower_percentile": 0.2,
+      "upper_percentile": 0.8,
+      "source": {
+        "type": "jsonl_trade_archive",
+        "files": 3,
+        "first_event_time_ms": 1775470582140,
+        "last_event_time_ms": 1775477416462
+      },
+      "thresholds": {
+        "min_volume_threshold": 0.00814,
+        "max_volume_threshold": 0.3182820000000003,
+        "min_trade_count": 8,
+        "max_trade_count": 48,
+        "min_std_dev": 0.004999999997380655,
+        "max_std_dev": 5.26864606144365
+      },
+      "entry_status": "fresh",
+      "source_run_id": null
+    },
+    {
+      "ticker": "ETHUSDC",
+      "window_ms": 10000,
+      "sampling_interval_ms": 1000,
+      "recalculated_at": "2026-04-06T12:16:22Z",
+      "lookback_duration_minutes": 120,
+      "sample_count": 6309,
+      "lower_percentile": 0.2,
+      "upper_percentile": 0.8,
+      "source": {
+        "type": "jsonl_trade_archive",
+        "files": 3,
+        "first_event_time_ms": 1775470582738,
+        "last_event_time_ms": 1775477416000
+      },
+      "thresholds": {
+        "min_volume_threshold": 0.4036600000000003,
+        "max_volume_threshold": 9.357520000000008,
+        "min_trade_count": 14,
+        "max_trade_count": 62,
+        "min_std_dev": 0.03341808950148897,
+        "max_std_dev": 0.16067829469295017
+      },
+      "entry_status": "fresh",
+      "source_run_id": null
+    }
+  ]
+}

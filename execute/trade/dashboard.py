@@ -6,6 +6,22 @@ import redis
 from nicegui import app, background_tasks, ui
 
 from market_data.channels import EXECUTION_DASHBOARD_UPDATES_CHANNEL
+from execute.trade.dashboard_state import (
+    build_manual_order_command,
+    build_trailing_stop_command,
+    format_metric,
+    format_pnl,
+    format_price,
+    is_positive_signal,
+    latest_activity_snapshot as shared_latest_activity_snapshot,
+    latest_signal_rows as shared_latest_signal_rows,
+    load_status as shared_load_status,
+    load_tickers as shared_load_tickers,
+    pinned_tickers as shared_pinned_tickers,
+    pnl_class,
+    publish_command as shared_publish_command,
+    score_class,
+)
 
 
 REDIS_HOST = 'localhost'
@@ -24,8 +40,7 @@ CONFIG_PATH = os.path.join(
 
 
 def load_tickers() -> list[str]:
-    with open(CONFIG_PATH, 'r') as f:
-        return [item['ticker'].lower() for item in json.load(f)]
+    return shared_load_tickers(CONFIG_PATH)
 
 
 def load_json(key: str, limit: int = 60) -> list[dict]:
@@ -33,22 +48,19 @@ def load_json(key: str, limit: int = 60) -> list[dict]:
 
 
 def load_status(ticker: str) -> dict:
-    return redis_client.hgetall(f'{ticker}_status')
+    return shared_load_status(redis_client, ticker)
 
 
 def pinned_tickers() -> list[str]:
-    return sorted(redis_client.smembers(PINNED_SET_KEY))
+    return shared_pinned_tickers(redis_client)
 
 
 def publish_command(action: str, ticker: str, **extra) -> None:
-    payload = {'action': action, 'ticker': ticker}
-    payload.update(extra)
-    redis_client.publish(COMMAND_CHANNEL, json.dumps(payload))
+    shared_publish_command(redis_client, action, ticker, **extra)
 
 
 def latest_activity_snapshot(ticker: str) -> dict:
-    snapshot = load_json(f'{ticker}_activity_snapshots', limit=60)
-    return snapshot[-1] if snapshot else {}
+    return shared_latest_activity_snapshot(redis_client, ticker)
 
 
 def latest_minute_snapshot(ticker: str) -> dict:
@@ -57,105 +69,17 @@ def latest_minute_snapshot(ticker: str) -> dict:
 
 
 def latest_signal_rows(tickers: list[str]) -> list[dict]:
-    rows = []
-    pinned = set(pinned_tickers())
-
-    for ticker in tickers:
-        activity = latest_activity_snapshot(ticker)
-        minute = latest_minute_snapshot(ticker)
-        rows.append({
-            'ticker': ticker.upper(),
-            'timestamp': activity.get('timestamp', '—'),
-            'qualified': 'Yes' if activity.get('is_qualified_activity') else 'No',
-            'activity_score': activity.get('activity_score', '—'),
-            'trades': activity.get('trades', '—'),
-            'volume': activity.get('volume', '—'),
-            'wap': activity.get('wap', '—'),
-            'std_dev': activity.get('std_dev', '—'),
-            'slope': activity.get('slope', '—'),
-            'minute_timestamp': minute.get('timestamp', '—'),
-            'minute_trades': minute.get('trades', '—'),
-            'minute_volume': minute.get('volume', '—'),
-            'minute_avg_price': minute.get('avg_price', '—'),
-            'is_pinned': ticker in pinned,
-        })
-
-    rows.sort(
-        key=lambda row: row['activity_score'] if isinstance(row['activity_score'], (int, float)) else -1,
-        reverse=True,
-    )
-    return rows
-
-
-def parse_float(value: str | float | int | None) -> float | None:
-    if value in (None, ''):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def format_price(value: str | float | None) -> str:
-    number = parse_float(value)
-    return '—' if number is None else f'${number:.2f}'
-
-
-def format_pnl(value: str | float | None) -> str:
-    number = parse_float(value)
-    if number is None:
-        return '—'
-    sign = '+' if number >= 0 else ''
-    return f'{sign}{number:.2f}'
-
-
-def format_metric(value: str | float | int | None, digits: int = 2) -> str:
-    if value in (None, ''):
-        return '—'
-    parsed = parse_float(value)
-    if parsed is None:
-        return str(value)
-    return f'{parsed:.{digits}f}'
-
-
-def pnl_class(value: str | float | None) -> str:
-    number = parse_float(value)
-    if number is None:
-        return 'neutral'
-    if number > 0:
-        return 'profit'
-    if number < 0:
-        return 'loss'
-    return 'neutral'
-
-
-def score_class(value: object) -> str:
-    if not isinstance(value, (int, float)):
-        return 'signal-cold'
-    if value >= 0.6:
-        return 'signal-hot'
-    if value >= 0.3:
-        return 'signal-warm'
-    return 'signal-cold'
-
-
-def is_positive_signal(row: dict) -> bool:
-    score = row.get('activity_score')
-    return row.get('qualified') == 'Yes' or (isinstance(score, (int, float)) and score >= 0.3)
+    return shared_latest_signal_rows(redis_client, tickers)
 
 
 def send_trailing_stop(ticker: str, status: dict) -> None:
-    live_price = parse_float(status.get('live_price'))
-    position = status.get('position')
-    if live_price is None or position not in {'long', 'short'}:
-        ui.notify(f'{ticker.upper()} needs an active trade and live price for trailing stop.', color='warning')
+    payload, error = build_trailing_stop_command(ticker, status.get('live_price'), status.get('position'))
+    if error:
+        ui.notify(error, color='warning')
         return
 
-    trail_gap = 0.0015
-    stop_price = live_price * (1 - trail_gap) if position == 'long' else live_price * (1 + trail_gap)
-    rounded_stop = round(stop_price, 2)
-    publish_command('modify_stop', ticker, stop_price=rounded_stop)
-    ui.notify(f'Trailing stop nudged for {ticker.upper()} at {rounded_stop}.', color='positive')
+    publish_command(payload['action'], ticker, stop_price=payload['stop_price'])
+    ui.notify(f'Trailing stop nudged for {ticker.upper()} at {payload["stop_price"]}.', color='positive')
 
 
 class DashboardPushSubscriber:
@@ -218,18 +142,18 @@ class DashboardPushSubscriber:
 
 
 def handle_order(ticker: str, side: str, status: dict) -> None:
-    live_price = status.get('live_price')
-    if not live_price:
-        ui.notify(f'{ticker.upper()} has no live price yet.', color='warning')
+    payload, error = build_manual_order_command(ticker, side, status.get('live_price'))
+    if error:
+        ui.notify(error, color='warning')
         return
 
     publish_command(
-        'place_limit_order',
+        payload['action'],
         ticker,
-        side=side,
-        limit_price=live_price,
-        initiated_by='manual',
-        control_mode='manual',
+        side=payload['side'],
+        limit_price=payload['limit_price'],
+        initiated_by=payload['initiated_by'],
+        control_mode=payload['control_mode'],
     )
     ui.notify(f'{side.upper()} limit submitted for {ticker.upper()}.', color='positive')
 
@@ -319,12 +243,13 @@ def render_activity_snapshots_panel(tickers: list[str]) -> None:
         for row in rows:
             pin_action = 'unpin_ticker' if row['is_pinned'] else 'pin_ticker'
             pin_label = 'Unpin' if row['is_pinned'] else 'Pin'
-            score_text = '—' if row['activity_score'] == '—' else f'{float(row["activity_score"]):.2f}'
+            score = row.get('activity_score')
+            score_text = '—' if score is None else f'{float(score):.2f}'
             row_classes = 'live-table-row positive-row' if is_positive_signal(row) else 'live-table-row'
 
             with ui.element('div').classes(row_classes):
                 ui.label(row['ticker']).classes('live-cell live-cell-strong')
-                ui.label(row['timestamp']).classes('live-cell mono-cell')
+                ui.label(row.get('timestamp') or '—').classes('live-cell mono-cell')
                 ui.label(score_text).classes(f'live-cell mono-cell {score_class(row["activity_score"])}')
                 ui.label(row['qualified']).classes(
                     f'live-cell mono-cell {"authentic-yes" if row["qualified"] == "Yes" else "authentic-no"}',
@@ -353,13 +278,14 @@ def render_minute_snapshots_panel(tickers: list[str]) -> None:
         for row in rows:
             pin_action = 'unpin_ticker' if row['is_pinned'] else 'pin_ticker'
             pin_label = 'Unpin' if row['is_pinned'] else 'Pin'
-            score_text = '—' if row['activity_score'] == '—' else f'{float(row["activity_score"]):.2f}'
+            score = row.get('activity_score')
+            score_text = '—' if score is None else f'{float(score):.2f}'
             signal_text = 'Positive' if is_positive_signal(row) else 'Watch'
             row_classes = 'live-table-row positive-row minute-row' if is_positive_signal(row) else 'live-table-row minute-row'
 
             with ui.element('div').classes(row_classes):
                 ui.label(row['ticker']).classes('live-cell live-cell-strong')
-                ui.label(row['minute_timestamp']).classes('live-cell mono-cell')
+                ui.label(row.get('minute_timestamp') or '—').classes('live-cell mono-cell')
                 ui.label(format_metric(row['minute_trades'], 0)).classes('live-cell mono-cell')
                 ui.label(format_metric(row['minute_volume'])).classes('live-cell mono-cell')
                 ui.label(format_metric(row['minute_avg_price'])).classes('live-cell mono-cell')
