@@ -1,12 +1,14 @@
 PYTHON  := .venv/bin/python
 RUN_DIR := .run
 
-.PHONY: start stop redis-check trade-ingestion activity-monitor main dashboard monitor volume-spike volatility
+.PHONY: start stop redis-check trade-ingestion activity-monitor calibration main dashboard monitor volume-spike volatility
 
 # ── Start all required components in the background ────────────────────────────
 start: stop redis-check | $(RUN_DIR)
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m market_data.run_trade_ingestion > $(RUN_DIR)/trade_ingestion.log 2>&1 & echo $$! > $(RUN_DIR)/trade_ingestion.pid
 	@echo "▶  market_data.run_trade_ingestion  (pid $$(cat $(RUN_DIR)/trade_ingestion.pid))"
+	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) -m monitor.calibrate_activity > $(RUN_DIR)/calibration.log 2>&1 & echo $$! > $(RUN_DIR)/calibration.pid
+	@echo "▶  monitor.calibrate_activity       (pid $$(cat $(RUN_DIR)/calibration.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/activity_monitor.py > $(RUN_DIR)/activity_monitor.log 2>&1 & echo $$! > $(RUN_DIR)/activity_monitor.pid
 	@echo "▶  monitor/activity_monitor.py      (pid $$(cat $(RUN_DIR)/activity_monitor.pid))"
 	@nohup env PYTHONUNBUFFERED=1 $(PYTHON) monitor/app.py > $(RUN_DIR)/monitor.log 2>&1 & echo $$! > $(RUN_DIR)/monitor.pid
@@ -39,6 +41,9 @@ trade-ingestion: redis-check
 
 activity-monitor: redis-check
 	$(PYTHON) monitor/activity_monitor.py
+
+calibration:
+	$(PYTHON) -m monitor.calibrate_activity
 
 main: redis-check
 	$(PYTHON) -m execute.breakout.main

@@ -3,6 +3,7 @@ import json
 import redis
 
 from market_data.channels import (
+    MARKET_DATA_UPDATES_CHANNEL,
     execution_price_channel,
     kline_events_channel,
     latest_kline_event_key,
@@ -31,6 +32,13 @@ class RedisMarketDataPublisher:
         self.redis_client.publish(trade_events_channel(event.symbol), payload)
         if self.write_latest_snapshot:
             self.redis_client.set(latest_trade_event_key(event.symbol), payload)
+            self.redis_client.publish(
+                MARKET_DATA_UPDATES_CHANNEL,
+                json.dumps({
+                    'ticker': event.symbol,
+                    'event': 'latest_trade_updated',
+                }),
+            )
 
         compatibility_payload = json.dumps({
             'event_type': event.event_type,

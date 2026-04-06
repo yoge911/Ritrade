@@ -193,15 +193,15 @@ Pure math — no Redis, no side effects.
 - `calculate_floating_pnl(position_type, entry_price, current_price, quantity)` — floating P&L in quote currency
 - `build_status(state, last_update)` — builds a `PriceLevels` model for Redis serialization
 
-### Kline Service: `Kline` (`execute/services/kline.py`)
+### Shared Kline Ingestion
 
-- Connects to Binance `@kline_1m` WebSocket per ticker
-- Maintains optional candle buffering for future chart and macro consumers
-- `stop()` sends a `shutdown_listener` sentinel and cancels the asyncio task
+- Kline ingestion belongs to `market_data/run_kline_ingestion.py`
+- Normalized candles are published to Redis as `{ticker}_kline_events`
+- Execution should consume those shared events if kline-driven strategy logic is reintroduced
 
 ### Execution Dashboard: `execute/trade/dashboard.py` (port 8080)
 
-Interactive NiceGUI surface. Refreshes every 1 second via `ui.timer`.
+Interactive NiceGUI surface. Refreshes on pushed Redis dashboard events via NiceGUI WebSocket updates.
 
 **Pinned Tickers section** — one card per pinned ticker from `execution_pinned_tickers`:
 - Stat cards: Live Price, Floating P&L, Zone, Entry, Stop, Score
@@ -260,4 +260,4 @@ Key test cases in `test_trade_runtime.py`:
 ## 8. Next Integration Points
 
 1. **Monitor → per-ticker snapshots**: `activity_monitor.py` needs to write `{ticker}_activity_snapshots` keys (one per ticker in `tickers_config.json`) so the execute dashboard signals table shows live data.
-2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — `ExecutionController.start_kline` creates `Kline` with no `on_candle` callback. Wiring it in would enable automated breakout entry per ticker.
+2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called. If reintroduced, it should consume shared `{ticker}_kline_events` from `market_data` rather than spinning up an execution-owned feed.

@@ -156,7 +156,6 @@ execute/breakout/main.py  →  ExecutionController
   ├── subscribes to execution_commands     — pin/unpin, place/cancel/close orders
   ├── restores execution_pinned_tickers    — persisted pinned set across restarts
   └── per pinned ticker:
-        ├── Kline (services/kline.py)      — optional candle stream for future chart / macro consumers
         └── Trade (services/trade.py)
               ├── state machine: idle → pending_entry → open → closed
               ├── ManualEntryStrategy      — validates entry, derives stop/target
@@ -177,7 +176,6 @@ execute/
     trade_runtime.py      TradeState, MarketSnapshot, EntryDecision, ExitDecision, type aliases
 
   services/               — behaviour / orchestration
-    kline.py              Kline          (WebSocket + Redis pub; stop() for graceful shutdown)
     pnl_calculator.py     PnLCalculator  (stop/target/P&L math; returns PriceLevels)
     trade.py              Trade          (thread + Redis sub + state machine + strategy wiring)
     execution.py          ExecutionService  (thin actuator: open/close/modify_stop)
@@ -470,7 +468,7 @@ Not yet integrated into the live engine.
 ## Next Integration Points
 
 1. **Signal semantics polish**: the current rolling `activity_score` is still qualification-gated, so non-qualified windows often show `0.0`; a future enhancement could expose a continuous pre-qualification build-up score.
-2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called — wiring it into `ExecutionController.start_kline` would enable automated breakout detection per ticker.
+2. **strategy.py wiring**: `execute/breakout/strategy.py` (`volatility_breakout`) is not currently called. If revived, it should consume shared `{ticker}_kline_events` from the `market_data` layer rather than starting a separate execution-owned feed.
 
 ---
 

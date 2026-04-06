@@ -3,20 +3,29 @@ import json
 import os
 import redis
 from execute.services.execution import ExecutionService
-from execute.services.kline import Kline
 from execute.services.trade import Trade
 from execute.strategy.fixed_stop import FixedStopExitStrategy
 from execute.strategy.manual_entry import ManualEntryStrategy
+from market_data.channels import EXECUTION_DASHBOARD_UPDATES_CHANNEL
 
 COMMAND_CHANNEL = 'execution_commands'
 PINNED_SET_KEY = 'execution_pinned_tickers'
-DEFAULT_INTERVAL = '1m'
 DEFAULT_ACCOUNT_BALANCE = 10000
 DEFAULT_QUANTITY = 1666.667
 DEFAULT_RISK_PERCENT = 1
 DEFAULT_REWARD_PERCENT = 2
 
 redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+
+def publish_dashboard_update(redis_client: redis.Redis, *, ticker: str, event: str) -> None:
+    redis_client.publish(
+        EXECUTION_DASHBOARD_UPDATES_CHANNEL,
+        json.dumps({
+            'ticker': ticker,
+            'event': event,
+        }),
+    )
 
 
 def load_tickers() -> list[str]:
@@ -33,8 +42,6 @@ class ExecutionController:
         self.redis_client = redis_client
         self.tickers = load_tickers()
         self.trades: dict[str, Trade] = {}
-        self.kline_clients: dict[str, Kline] = {}
-        self.kline_tasks: dict[str, asyncio.Task] = {}
         self.pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
 
     def get_trade(self, ticker: str) -> Trade:
@@ -59,31 +66,11 @@ class ExecutionController:
             self.trades[ticker] = trade
         return self.trades[ticker]
 
-    async def start_kline(self, ticker: str) -> None:
-        if ticker in self.kline_tasks:
-            return
-
-        client = Kline(symbol=ticker, interval=DEFAULT_INTERVAL, candle_buffer_size=-1)
-        self.kline_clients[ticker] = client
-        self.kline_tasks[ticker] = asyncio.create_task(client.listen())
-        print(f'[{ticker}] Started Kline listener.')
-
-    async def stop_kline(self, ticker: str) -> None:
-        client = self.kline_clients.pop(ticker, None)
-        task = self.kline_tasks.pop(ticker, None)
-        if client:
-            client.stop()
-        if task:
-            try:
-                await asyncio.wait_for(task, timeout=3)
-            except TimeoutError:
-                task.cancel()
-        print(f'[{ticker}] Stopped Kline listener.')
-
     async def pin_ticker(self, ticker: str) -> None:
         trade = self.get_trade(ticker)
         trade.pin()
         self.redis_client.sadd(PINNED_SET_KEY, ticker)
+        publish_dashboard_update(self.redis_client, ticker=ticker, event='ticker_pinned')
 
     async def unpin_ticker(self, ticker: str) -> None:
         trade = self.trades.get(ticker)
@@ -98,6 +85,7 @@ class ExecutionController:
         trade.clear_status()
         self.trades.pop(ticker, None)
         self.redis_client.srem(PINNED_SET_KEY, ticker)
+        publish_dashboard_update(self.redis_client, ticker=ticker, event='ticker_unpinned')
 
     async def handle_command(self, command: dict) -> None:
         ticker = str(command.get('ticker', '')).lower()

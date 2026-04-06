@@ -1,6 +1,9 @@
 GLOBAL_MINUTE_LOGS_KEY = 'minute_logs'
 GLOBAL_ROLLING_METRICS_LOGS_KEY = 'rolling_metrics_logs'
 GLOBAL_TRAP_LOGS_KEY = 'trap_logs'
+MONITOR_DASHBOARD_UPDATES_CHANNEL = 'monitor_dashboard_updates'
+EXECUTION_DASHBOARD_UPDATES_CHANNEL = 'execution_dashboard_updates'
+MARKET_DATA_UPDATES_CHANNEL = 'market_data_updates'
 
 
 def normalize_symbol(symbol: str) -> str:

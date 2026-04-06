@@ -94,7 +94,6 @@ sequenceDiagram
 - **`run()`** — subscribes to `execution_commands` and polls for incoming commands
 - **`handle_command(command)`** — routes commands (`pin_ticker`, `unpin_ticker`, `place_limit_order`, `cancel_order`, `close_position`, `modify_stop`) to the ticker's `Trade` object
 - **`get_trade(ticker)`** — lazily creates a `Trade` with injected `ManualEntryStrategy` + `FixedStopExitStrategy`
-- **`start_kline(ticker)`** / **`stop_kline(ticker)`** — manages `Kline` WebSocket lifecycle per ticker
 
 ### `Trade` (`execute/services/trade.py`)
 
@@ -145,8 +144,8 @@ Pure math — no side effects.
 - **`calculate_floating_pnl(...)`** — floating P&L in quote currency
 - **`build_status(state, last_update)`** — builds `PriceLevels` model for Redis serialization
 
-### `Kline` (`execute/services/kline.py`)
+### Shared Kline Feed (`market_data/run_kline_ingestion.py`)
 
-- Connects to Binance `@kline_1m` WebSocket per ticker
-- Maintains candle buffering for optional future chart or macro consumers
-- **`stop()`** — cancels the asyncio task for clean shutdown
+- Owns Binance `@kline` ingestion for the whole system
+- Publishes normalized candles to Redis as `{ticker}_kline_events`
+- Any execution strategy that needs candles should subscribe to that shared feed instead of creating its own socket

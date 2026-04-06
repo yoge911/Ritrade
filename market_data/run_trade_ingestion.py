@@ -1,11 +1,14 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from market_data.publishers.redis import RedisMarketDataPublisher
 from market_data.sources.binance import BinanceTradeWebSocketSource
+from market_data.storage import JsonlTradeArchiveSink
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / 'tickers_config.json'
+ARCHIVE_ROOT = Path(os.environ.get('RITRADE_TRADE_ARCHIVE_DIR', Path(__file__).resolve().parents[1] / 'data' / 'trade_archive'))
 
 
 def load_tickers() -> list[str]:
@@ -14,7 +17,10 @@ def load_tickers() -> list[str]:
 
 
 async def main() -> None:
-    publisher = RedisMarketDataPublisher()
+    publisher = RedisMarketDataPublisher(
+        write_latest_snapshot=True,
+        storage_sink=JsonlTradeArchiveSink(ARCHIVE_ROOT),
+    )
     tickers = load_tickers()
     tasks = [
         BinanceTradeWebSocketSource(ticker).run(publisher.publish_trade)

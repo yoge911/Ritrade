@@ -9,7 +9,7 @@ from execute.services.execution import ExecutionService
 from execute.services.pnl_calculator import PnLCalculator
 from execute.strategy.base import EntryStrategy, ExitStrategy
 from core_utils.format import format_timestamp
-from market_data.channels import execution_price_channel
+from market_data.channels import EXECUTION_DASHBOARD_UPDATES_CHANNEL, execution_price_channel
 
 
 class Trade:
@@ -351,10 +351,24 @@ class Trade:
             for key, value in payload.items()
         }
         self._redis_client.hset(f"{self.state.ticker}_status", mapping=mapping)
+        self._redis_client.publish(
+            EXECUTION_DASHBOARD_UPDATES_CHANNEL,
+            json.dumps({
+                'ticker': self.state.ticker,
+                'event': 'status_updated',
+            }),
+        )
 
     def clear_status(self) -> None:
         """Remove the persisted Redis status for this ticker."""
         self._redis_client.delete(f"{self.state.ticker}_status")
+        self._redis_client.publish(
+            EXECUTION_DASHBOARD_UPDATES_CHANNEL,
+            json.dumps({
+                'ticker': self.state.ticker,
+                'event': 'status_cleared',
+            }),
+        )
 
     def autocontrol(self) -> None:
         """Placeholder hook for future higher-level automation orchestration."""
