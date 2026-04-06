@@ -18,3 +18,7 @@ __pycache__/
 
 # Process runtime (make start)
 .run/
+
+# Archived trade data
+data/trade_archive/
+*.jsonl
